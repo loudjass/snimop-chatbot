@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { analyzeBelt, analyzeBearing, analyzeGeneral, compareBelt, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
+import { analyzeBelt, analyzeBearing, analyzeGeneral, compareBelt, compareBeltReverse, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
 
 export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece" | "compare";
 
@@ -25,7 +25,10 @@ export default function ChatBot() {
   });
   
   // Belt Comparator State
+  const [compMode, setCompMode] = useState<"classic"|"reverse">("classic");
   const [compProfile, setCompProfile] = useState("SPA");
+  const [compWidth, setCompWidth] = useState("");
+  const [compHeight, setCompHeight] = useState("");
   const [compLengthType, setCompLengthType] = useState("Li");
   const [compValue, setCompValue] = useState("");
   
@@ -299,7 +302,7 @@ export default function ChatBot() {
 
       else if (currentFlow === "devis") {
         if (current === 1) {
-          addMessage("bot", "Merci pour ces précisions. Dans quel contexte l'équipement est-il utilisé et quelle est l'urgence ? (Vous pouvez aussi nous envoyer une photo du problème ou de la plaque signalétique)");
+          addMessage("bot", "Oui, nous pouvons intervenir.\nPour vous proposer un devis précis, j'ai besoin de :\n- type d'équipement\n- problème rencontré\n- localisation du site\n- niveau d'urgence.\n\nVous pouvez aussi envoyer une photo.");
           addTag("URGENT");
         } else if (current === 2) {
           addMessage("bot", "C'est noté. Afin d'éditer un devis et de vous recontacter avec une proposition propre, merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
@@ -374,10 +377,25 @@ export default function ChatBot() {
     const val = parseFloat(compValue);
     if (!val || isNaN(val)) return;
 
-    const result = compareBelt(compProfile, compLengthType, val);
+    let result;
+    let userInputMsg = "";
+    let aiEquivStr = "";
+
+    if (compMode === "classic") {
+       result = compareBelt(compProfile, compLengthType, val);
+       userInputMsg = `Comparaison : ${compProfile} ${val} ${compLengthType}`;
+       aiEquivStr = result.equivalent;
+    } else {
+       const w = parseFloat(compWidth);
+       const h = parseFloat(compHeight);
+       if (!w || !h || isNaN(w) || isNaN(h)) return;
+       result = compareBeltReverse(w, h, compLengthType, val);
+       userInputMsg = `Recherche inversée : ${w}x${h} mm - ${val} ${compLengthType}`;
+       aiEquivStr = result.equivalent;
+    }
     
     // Inject the simulated thought process from the user into chat history
-    addMessage("user", `Comparaison : ${compProfile} ${val} ${compLengthType}`);
+    addMessage("user", userInputMsg);
     
     // Give the bot's calculated response
     setTimeout(() => {
@@ -389,12 +407,12 @@ export default function ChatBot() {
         setRequestData(prev => ({ 
            ...prev, 
            flowType: "courroie", 
-           aiAnalysis: `Comparaison : ${compProfile} ${val} ${compLengthType} -> Equivalent : ${result.equivalent}`,
-           dimensions: `${compValue} ${compLengthType}`
+           aiAnalysis: `${userInputMsg} -> Equivalent : ${aiEquivStr}`,
+           dimensions: aiEquivStr
         }));
         setCurrentFlow("courroie");
         setStep(2);
-        addMessage("bot", "Si vous souhaitez commander ou demander un prix pour cette courroie équivalente, quelle quantité vous faut-il et à quoi sert-elle (application) ?");
+        addMessage("bot", "Si vous souhaitez commander ou demander un prix pour cette courroie, quelle quantité vous faut-il et à quoi sert-elle (application) ?");
       }, 1500);
       
     }, 600);
@@ -475,45 +493,75 @@ export default function ChatBot() {
                 {/* Custom Comparator UI */}
                 {message.isCustomUI === "comparator" && message.sender === "bot" && (
                   <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 dark:bg-slate-900/50 dark:border-slate-700 flex flex-col gap-4">
-                     <div className="grid grid-cols-2 gap-3">
-                       <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
-                         Profil (Section)
-                         <select 
-                           value={compProfile} 
-                           onChange={e => setCompProfile(e.target.value)}
-                           className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                         >
-                            <option value="A">A / 4L / 13x8</option>
-                            <option value="AX">AX</option>
-                            <option value="B">B / 5L / 17x11</option>
-                            <option value="BX">BX</option>
-                            <option value="C">C / 22x14</option>
-                            <option value="CX">CX</option>
-                            <option value="Z">Z / 3L / 10x6</option>
-                            <option value="SPA">SPA</option>
-                            <option value="SPB">SPB</option>
-                            <option value="SPC">SPC</option>
-                            <option value="SPZ">SPZ</option>
-                            <option value="XPA">XPA</option>
-                            <option value="XPB">XPB</option>
-                            <option value="XPC">XPC</option>
-                            <option value="XPZ">XPZ</option>
-                         </select>
-                       </label>
-
-                       <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
-                         Type Longueur
-                         <select 
-                           value={compLengthType} 
-                           onChange={e => setCompLengthType(e.target.value)}
-                           className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                         >
-                            <option value="Li">Li (intérieure)</option>
-                            <option value="Le">Le (extérieure)</option>
-                            <option value="Ld">Ld (primitive)</option>
-                         </select>
-                       </label>
+                     
+                     <div className="flex bg-slate-200 dark:bg-slate-800 rounded-lg p-1">
+                        <button onClick={() => setCompMode("classic")} className={cn("flex-1 py-1.5 text-sm font-medium rounded-md", compMode === "classic" ? "bg-white dark:bg-slate-700 shadow text-brand-blue" : "text-slate-500 hover:text-slate-700")}>Profil Connu</button>
+                        <button onClick={() => setCompMode("reverse")} className={cn("flex-1 py-1.5 text-sm font-medium rounded-md", compMode === "reverse" ? "bg-white dark:bg-slate-700 shadow text-brand-orange" : "text-slate-500 hover:text-slate-700")}>Dimension 📏</button>
                      </div>
+
+                     {compMode === "classic" ? (
+                       <div className="grid grid-cols-2 gap-3">
+                         <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                           Profil (Section)
+                           <select 
+                             value={compProfile} 
+                             onChange={e => setCompProfile(e.target.value)}
+                             className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                           >
+                              <option value="A">A / 4L / 13x8</option>
+                              <option value="AX">AX</option>
+                              <option value="B">B / 5L / 17x11</option>
+                              <option value="BX">BX</option>
+                              <option value="C">C / 22x14</option>
+                              <option value="CX">CX</option>
+                              <option value="Z">Z / 3L / 10x6</option>
+                              <option value="SPA">SPA</option>
+                              <option value="SPB">SPB</option>
+                              <option value="SPC">SPC</option>
+                              <option value="SPZ">SPZ</option>
+                              <option value="XPA">XPA</option>
+                              <option value="XPB">XPB</option>
+                              <option value="XPC">XPC</option>
+                              <option value="XPZ">XPZ</option>
+                           </select>
+                         </label>
+                         <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                           Type Longueur
+                           <select 
+                             value={compLengthType} 
+                             onChange={e => setCompLengthType(e.target.value)}
+                             className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                           >
+                              <option value="Li">Li (intérieure)</option>
+                              <option value="Le">Le (extérieure)</option>
+                              <option value="Ld">Ld (primitive)</option>
+                           </select>
+                         </label>
+                       </div>
+                     ) : (
+                       <div className="grid grid-cols-2 gap-3">
+                         <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                           Largeur (mm)
+                           <input type="number" placeholder="ex: 13" value={compWidth} onChange={e => setCompWidth(e.target.value)} className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"/>
+                         </label>
+                         <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                           Hauteur (mm)
+                           <input type="number" placeholder="ex: 8" value={compHeight} onChange={e => setCompHeight(e.target.value)} className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"/>
+                         </label>
+                         <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300 col-span-2">
+                           Type Longueur
+                           <select 
+                             value={compLengthType} 
+                             onChange={e => setCompLengthType(e.target.value)}
+                             className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                           >
+                              <option value="Li">Li (intérieure)</option>
+                              <option value="Le">Le (extérieure)</option>
+                              <option value="Ld">Ld (primitive)</option>
+                           </select>
+                         </label>
+                       </div>
+                     )}
 
                      <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
                          Valeur (mm)
@@ -528,7 +576,7 @@ export default function ChatBot() {
 
                      <button 
                        onClick={handleComparatorSubmit}
-                       disabled={!compValue}
+                       disabled={!compValue || (compMode === "reverse" && (!compWidth || !compHeight))}
                        className="w-full mt-2 py-3 rounded-lg bg-brand-blue text-white font-medium hover:bg-brand-blue-light transition-colors disabled:opacity-50"
                      >
                        Calculer l'équivalence

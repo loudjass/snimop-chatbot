@@ -193,16 +193,46 @@ export const calculateCompletionScore = (data: ChatbotData, userMessages: string
 // ==========================================
 
 export const analyzeBelt = (input: string): { matches: boolean; message: string; tags: RequestTag[]; needsCascade: boolean; detectedType?: string } => {
-  const normInput = input.toLowerCase().replace(/ /g, '');
+  const rawInputLow = input.toLowerCase();
   
   let tags: RequestTag[] = ["COURROIE", "TECHNIQUE"];
   let message = "";
   let needsCascade = false;
   let detectedType = "Courroie";
 
-  // Dimensions : largeur x hauteur (Exclusion formelle des 3 dimensions pour éviter les roulements)
-  const dimRegex = /(?<!\dx)\b(\d+)[xX*](\d+)\b(?![xX*]\d)/;
-  const matchDim = normInput.match(dimRegex);
+  const isCourroieContext = rawInputLow.includes("courroi") || rawInputLow.includes("compresseur") || rawInputLow.includes("voiture") || rawInputLow.includes("poulie") || rawInputLow.includes("ventilateur") || rawInputLow.includes("cassée") || rawInputLow.includes("cassé") || rawInputLow.includes("cassé");
+
+  // Dimensions : largeur x hauteur 
+  const dimRegex = /(?<!\d\s*[xX*]\s*)\b(\d+)\s*[xX*]\s*(\d+)\b(?!\s*[xX*]\s*\d)/;
+  const matchDim = rawInputLow.match(dimRegex);
+
+  // Profils explicites type A, B, C, SPZ, XPZ, AX, 3L...
+  const profileRegex = /\b(spz|spa|spb|spc|xpz|xpa|xpb|xpc|t5|t10|at10|8m|14m|ax|bx|cx|dx|3l|4l|5l)\b/i;
+  let matchProfile = rawInputLow.match(profileRegex);
+
+  // Pour les profils à une lettre (A, B, C, Z, E), on sécurise contre les apostrophes ("c'est") ou les "a"
+  const singleLetterRegex = /(?:profil|section|type|courroie)\s+([a-ez])\b/i;
+  const matchSingleLetter = rawInputLow.match(singleLetterRegex);
+  if (!matchProfile && matchSingleLetter) {
+      matchProfile = matchSingleLetter;
+  }
+
+  // Catch things like A50, B60 directly
+  const letterMatch = rawInputLow.match(/\b([a-z])\s*(\d{2,})\b/i);
+  
+  // Length
+  const lengthMatch = rawInputLow.match(/\b(li|le|ld|la)?\s*(\d{3,})\s*(li|le|ld|la)?\b/i);
+  let lengthStr = "";
+  let lengthType = "";
+  if (lengthMatch) {
+     lengthStr = lengthMatch[2];
+     lengthType = lengthMatch[1] || lengthMatch[3] || "";
+  }
+
+  // Quantity
+  const qtyMatch = rawInputLow.match(/\b(\d+)\s*(p[iieè]{1,2}ce?s?|qt[ée]?|unit[ée]s?)\b/i) || rawInputLow.match(/qt[ée]?\s*(\d+)/i) || rawInputLow.match(/quantit[ée]\s*(\d+)/i);
+  let qtyStr = "";
+  if (qtyMatch) qtyStr = qtyMatch[1];
 
   let probableProfile = "";
 
@@ -218,65 +248,78 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     else if (width === 10 && height === 8) probableProfile = "SPZ";
     else if (width === 22 && height === 14) probableProfile = "C";
     else if (width === 22 && height === 18) probableProfile = "SPC";
+  } else if (matchProfile) {
+    probableProfile = matchProfile[1].toUpperCase();
+  } else if (letterMatch && ['a','b','c','z'].includes(letterMatch[1])) {
+    probableProfile = letterMatch[1].toUpperCase();
+    lengthStr = letterMatch[2]; // implicit length
+  }
+
+  // If we have a full identification:
+  if (probableProfile && lengthStr) {
+     const lenPart = lengthType ? `${lengthType.toUpperCase()} ${lengthStr}` : `${lengthStr}`;
+     const dimText = matchDim ? ` section ${matchDim[1]}x${matchDim[2]}` : ``;
+     const finalProfileText = matchDim ? ` profil ${probableProfile}` : ` profil ${probableProfile}`;
+     const dimDesc = dimText + finalProfileText;
+     const qtyText = qtyStr ? `, quantité ${qtyStr}` : "";
+     
+     message = `Vous recherchez : une courroie trapézoïdale${dimDesc} longueur ${lenPart} mm${qtyText}.`;
+     
+     if (!qtyStr) {
+         needsCascade = true;
+         message += "\n\nQuelle quantité souhaitez-vous ?";
+     }
+     return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
+  // If only dimensions or profile
+  if (probableProfile) {
+    message = `D’après vos dimensions, cela correspond probablement à une courroie profil ${probableProfile}.`;
     
-    if (probableProfile) {
-       message = `[Identification probable]\nIl s'agit probablement d'un profil ${probableProfile}, mais pour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.`;
-       needsCascade = true;
-       return { matches: true, message, tags, needsCascade, detectedType };
-    } else {
-       message = `[À confirmer]\nLes dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.\n\nPour nous permettre de vous aider efficacement, merci de nous préciser la référence exacte ou la longueur.`;
-       needsCascade = true;
-       return { matches: true, message, tags, needsCascade, detectedType };
-    }
-  }
-
-  // Profils explicites type A, B, C, SPZ, XPZ, AX, 3L...
-  const profileRegex = /\b(spz|spa|spb|spc|xpz|xpa|xpb|xpc|t5|t10|at10|8m|14m|ax|bx|cx|dx|[a-e]|3l|4l|5l)\b/;
-  const matchProfile = normInput.match(profileRegex);
-  
-  let hasLength = normInput.match(/\d{3,}/); // basic check for length
-
-  if (matchProfile) {
-    const p = matchProfile[1].toUpperCase();
-    if (p.startsWith('SP') || ['A','B','C','D','E','Z'].includes(p)) {
-      message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale de profil ${p}.`;
-    } else if (p.startsWith('XP') || p.startsWith('AX') || p.startsWith('BX') || p.startsWith('CX')) {
-       message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale crantée de profil ${p}.`;
-    } else {
-      message = `[Identification probable]\nCela correspond probablement à une courroie (profil ${p} probable).`;
-    }
-  } else if (normInput.match(/\b([a-z])(\d{2,})\b/)) {
-      const letterMatch = normInput.match(/\b([a-z])(\d{2,})\b/);
-      if (letterMatch && ['a','b','c','z'].includes(letterMatch[1])) {
-         message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale classique type ${letterMatch[1].toUpperCase()}${letterMatch[2]} (valeur indicative).\n\n⚠️ Équivalence sous réserve selon l'application.`;
-      }
-  }
-
-  if (message) {
+    if (probableProfile === "A") message += "\nProfils proches possibles : SPA, 4L.";
+    else if (probableProfile === "B") message += "\nProfils proches possibles : SPB, 5L.";
+    else if (probableProfile === "Z") message += "\nProfils proches possibles : SPZ, 3L.";
+    
+    message += "\nSouhaitez-vous que je vous propose un modèle compatible ? Pouvez-vous préciser la longueur (idéalement Li, Le ou Ld) ?";
     needsCascade = true;
-    if (hasLength) {
-       message = message.replace("[Identification probable]", "[Identification certaine]");
-       message += "\nPour sécuriser parfaitement la commande, merci de nous confirmer si la longueur donnée est en Li (intérieure), Le (extérieure) ou Ld (primitive).\nVous pouvez aussi nous envoyer une photo.";
-    } else {
-       message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nNous restons à votre disposition pour vous guider si besoin.";
-    }
     return { matches: true, message, tags, needsCascade, detectedType };
   }
-  
+
+  // If context but no strict dims:
+  if (isCourroieContext) {
+     if (rawInputLow.includes("compresseur")) {
+        message = "Dans ce type d’application, il s’agit généralement d’une courroie trapézoïdale ou poly-V.\nPouvez-vous me donner la largeur ou la longueur ?";
+     } else if (rawInputLow.includes("voiture") || rawInputLow.includes("auto")) {
+        message = "Dans le domaine automobile, il s'agit généralement d'une courroie d'accessoire (poly-V) ou de distribution (crantée).\nPouvez-vous me donner une largeur ou une référence ?";
+     } else if (rawInputLow.includes("cassée") || rawInputLow.includes("pas de ref") || rawInputLow.includes("inconnu") || rawInputLow.includes("plus de reference") || rawInputLow.includes("illisible")) {
+        message = "Vous pouvez utiliser une corde ou un mètre souple : \nfaites le tour complet des poulies en fond de gorge pour obtenir une longueur approximative.\n\nPouvez-vous me donner cette mesure ?";
+     } else {
+        message = "Vous recherchez une courroie.\nVous pouvez mesurer avec une corde en faisant le tour des poulies (en fond de gorge) pour obtenir une longueur approximative.\nPouvez-vous me donner cette mesure ou une référence ?";
+     }
+     needsCascade = true;
+     return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
   return { matches: false, message: "", tags: [], needsCascade: false };
 };
 
 
 export const analyzeBearing = (input: string): { matches: boolean; message: string; tags: RequestTag[]; needsCascade: boolean; detectedType?: string } => {
-  const normInput = input.toLowerCase().replace(/ /g, '');
+  const rawInputLow = input.toLowerCase();
+
+  // If belt prioritized
+  if (rawInputLow.includes("courroi") || rawInputLow.includes("compresseur") || rawInputLow.includes("poulie") || rawInputLow.includes("cassée")) {
+     return { matches: false, message: "", tags: [], needsCascade: false };
+  }
+
   let tags: RequestTag[] = ["ROULEMENT", "TECHNIQUE"];
   let message = "";
   let needsCascade = false;
   let detectedType = "Roulement";
 
   // Dimensions : int x ext x epaisseur
-  const dimRegex = /(\d+)[xX*](\d+)[xX*](\d+)/;
-  const matchDim = normInput.match(dimRegex);
+  const dimRegex = /\b(\d+)\s*[xX*]\s*(\d+)\s*[xX*]\s*(\d+)\b/;
+  const matchDim = rawInputLow.match(dimRegex);
   
   let likelyType = "";
 
@@ -304,25 +347,37 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
   }
 
   if (likelyType) {
-    message = `[Identification probable]\nLes dimensions ou référence correspondent probablement à un roulement type ${likelyType}.`;
-  }
-
-  // Suffixes (2RS, ZZ, C3)
-  if (normInput.includes('2rs') || normInput.includes('ddu') || normInput.includes('llu')) {
-    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est en version étanche (2RS / DDU / LLU).";
-  } else if (normInput.includes('zz')) {
-    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est en version avec flasques métal (ZZ).";
-  } else if (normInput.includes('c3')) {
-    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est à jeu augmenté (C3).";
-  }
-
-  if (message) {
-    if (matchNum) {
-       message = message.replace("[Identification probable]", "[Identification certaine]");
+    let baseFormat = `Vous recherchez un roulement ${likelyType}.`;
+    
+    // Suffx parsing
+    let suffixText = "";
+    if (rawInputLow.includes('2rs') || rawInputLow.includes('ddu') || rawInputLow.includes('llu')) {
+       suffixText = " en version étanche (2RS / DDU / LLU).";
+    } else if (rawInputLow.includes('zz')) {
+       suffixText = " en version avec flasques métal (ZZ).";
     }
+
+    if (suffixText) {
+       message = baseFormat.replace(".", suffixText) + "\n\nNous pouvons vous proposer 3 gammes : économique (ZEN / générique), standard (NTN / SNR) ou premium (SKF / FAG).\n\nQuelle quantité souhaitez-vous ?";
+    } else {
+       message = baseFormat + "\n\nSouhaitez-vous une version étanche (2RS), flasque métal (ZZ) ou ouverte ?\n\nNous pouvons vous proposer 3 gammes : économique, standard ou premium.\n\nQuelle quantité souhaitez-vous ?";
+    }
+    
     needsCascade = true;
-    message += `\n\nPour éviter toute erreur, merci de nous confirmer le type :\n- ouvert\n- 2RS (étanche)\n- ZZ (flasques métal)\n\nNous pouvons vous proposer 3 gammes :\n- économique (ZEN / générique)\n- standard (NTN / SNR)\n- premium (SKF / FAG)\n\nQuelle quantité souhaitez-vous ?`;
     return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
+  // Handle incoherent refs
+  if (input.match(/\b([A-Z]*\d{5,}[A-Z]*)\b/)) {
+     message = "Cette référence ne correspond pas à un standard connu, mais nous pouvons vous proposer un équivalent.\nPourriez-vous nous donner les dimensions (intérieur x extérieur x épaisseur) ?";
+     needsCascade = true;
+     return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
+  if (rawInputLow.includes("bruit sur axe") || rawInputLow.includes("roulement")) {
+      message = "Dans ce type d’application, il s’agit généralement d’une usure du roulement.\nVous pouvez nous fournir les dimensions (intérieur x extérieur x épaisseur) ou la référence gravée sur la bague ?";
+      needsCascade = true;
+      return { matches: true, message, tags, needsCascade, detectedType };
   }
   
   return { matches: false, message: "", tags: [], needsCascade: false };
@@ -332,15 +387,17 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   const normInput = input.toLowerCase();
   
   if (normInput.match(/ucp|ucf|ucfl|uct|ucfc|insert uc|palier/)) {
-    let msg = "[Identification probable]\nCela correspond probablement à un palier.";
+    let msg = "Vous recherchez un palier.";
     if (normInput.match(/arbre 20|20\s*mm/)) {
-      msg = "[Identification certaine]\nD'après le diamètre d'arbre de 20mm, cela correspond probablement à la série 204 (ex: UCFL204, etc). Il est interchangeable toutes marques.";
-    } else if (normInput.match(/arbre 25|25\s*mm/)) {
-      msg = "[Identification certaine]\nD'après le diamètre d'arbre de 25mm, cela correspond probablement à la série 205. Il est interchangeable toutes marques.";
+      msg = "Vous recherchez un palier série 204 (alésage 20 mm). Il est interchangeable toutes marques.";
+    } else if (normInput.match(/arbre 25|25\s*mm/) || normInput.match(/205/)) {
+      msg = "Vous recherchez un palier série 205 (alésage 25 mm). Il est interchangeable toutes marques.";
+    } else {
+      msg = "Vous recherchez un palier.";
     }
     return {
       matches: true,
-      message: msg + "\n\nPour éviter toute erreur, merci de nous préciser s'il s'agit d'un palier semelle (UCP), à bride carrée (UCF), ovale (UCFL), ou de nous envoyer une photo.\n\nOptions possibles : fonte, inox, plastique.",
+      message: msg + "\n\nPour éviter toute erreur, merci de nous préciser s'il s'agit d'un palier semelle (UCP), à bride carrée (UCF), ovale (UCFL), ou de nous envoyer une photo.\n\nQuelle quantité souhaitez-vous ?",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Palier"
@@ -462,5 +519,40 @@ export const compareBelt = (profile: string, lengthType: string, value: number):
   return {
     equivalent,
     message: `[À confirmer]\nProfil : **${profile}**\nSaisie : **${value} ${lengthType}**\n\n→ Li : **${Math.round(li)}**\n→ Le : **${Math.round(le)}**\n→ Ld : **${Math.round(ld)}**\n\n→ équivalent : **${famProfile}**\n\n${warning}`
+  };
+};
+
+export const compareBeltReverse = (width: number, height: number, lengthType: string, value: number): { message: string, equivalent: string } => {
+  let probableProfiles: string[] = [];
+
+  if (width === 13 && height === 8) probableProfiles = ["A", "4L", "AX"];
+  else if (width === 13 && height === 10) probableProfiles = ["SPA", "XPA"];
+  else if (width === 17 && height === 11) probableProfiles = ["B", "5L", "BX"];
+  else if ((width === 16 && height === 13) || (width === 17 && height === 14)) probableProfiles = ["SPB", "XPB"];
+  else if (width === 10 && height === 6) probableProfiles = ["Z", "3L", "ZX"];
+  else if (width === 10 && height === 8) probableProfiles = ["SPZ", "XPZ"];
+  else if (width === 22 && height === 14) probableProfiles = ["C", "CX"];
+  else if (width === 22 && height === 18) probableProfiles = ["SPC", "XPC"];
+
+  if (probableProfiles.length === 0) {
+     return {
+       equivalent: "",
+       message: `[À confirmer]\nSaisie : **${width}x${height} mm** - **${value} ${lengthType}**\n\nAucun profil standard direct trouvé pour ces dimensions.\n\n⚠️ *Les dimensions seules peuvent correspondre à plusieurs profils, une confirmation avec une marque ou l'application est recommandée.*`
+     };
+  }
+
+  const mainProfile = probableProfiles[0];
+  const others = probableProfiles.slice(1).join(", ");
+  
+  // Reuse existing logic to calculate Ld, Li, Le for the main profile
+  const converted = compareBelt(mainProfile, lengthType, value);
+  const convParts = converted.message.match(/→ Li : \*\*\d+\*\*\n→ Le : \*\*\d+\*\*\n→ Ld : \*\*\d+\*\*/);
+  const convText = convParts ? `\n\nConversions probables pour le profil ${mainProfile} :\n${convParts[0]}\n` : "";
+
+  let resultMsg = `[Identification probable]\nSaisie : **${width}x${height} mm** - **${value} ${lengthType}**\n\n→ Profil le plus probable : **${mainProfile}**\nProfils proches (crantés / US) : **${others}**${convText}\n\n⚠️ *Les dimensions seules peuvent correspondre à plusieurs profils, une confirmation est recommandée.*`;
+
+  return {
+    equivalent: `${mainProfile} ${Math.round(value)} ${lengthType}`,
+    message: resultMsg
   };
 };
