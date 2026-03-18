@@ -196,11 +196,36 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   const rawInputLow = input.toLowerCase();
   
   let tags: RequestTag[] = ["COURROIE", "TECHNIQUE"];
-  let message = "";
   let needsCascade = false;
   let detectedType = "Courroie";
 
-  const isCourroieContext = rawInputLow.includes("courroi") || rawInputLow.includes("compresseur") || rawInputLow.includes("voiture") || rawInputLow.includes("poulie") || rawInputLow.includes("ventilateur") || rawInputLow.includes("cassée") || rawInputLow.includes("cassé") || rawInputLow.includes("cassé");
+  const isCourroieContext = rawInputLow.includes("courroi") || rawInputLow.includes("compresseur") || rawInputLow.includes("voiture") || rawInputLow.includes("poulie") || rawInputLow.includes("ventilateur") || rawInputLow.includes("cassée") || rawInputLow.includes("cassé") || rawInputLow.includes("patine") || rawInputLow.includes("glisse") || rawInputLow.includes("bruit") || rawInputLow.includes("vibration");
+
+  // Symptoms
+  let symptomMsg = "";
+  let solutionMsg = "";
+  let fallbackProp = "";
+  if (rawInputLow.includes("patine") || rawInputLow.includes("glisse")) {
+     symptomMsg = "Vous mentionnez une courroie qui patine. Cela indique souvent une tension insuffisante, une usure avancée (courroie glacée) ou un mauvais alignement.";
+     solutionMsg = "Dans ce genre de cas récurrent, passer sur un profil cranté offre une bien meilleure adhérence et résistance à la flexion.";
+     fallbackProp = "Je vous recommande de vous orienter vers un modèle cranté (type XPZ ou XPA selon vos poulies) pour stopper ce patinage.";
+  } else if (rawInputLow.includes("compresseur")) {
+     symptomMsg = "Vous recherchez une courroie pour un compresseur, ce type d'équipement demande généralement une section trapézoïdale pour encaisser les à-coups.";
+     solutionMsg = "Pour un usage intensif, nous recommandons une version crantée (type XPZ, AX, BX) qui dissipe l'échauffement et transmet plus de puissance.";
+     fallbackProp = "Dans ce cas, je vous recommande de partir sur une courroie crantée type XPZ ou AX, plus adaptée aux compresseurs. Nous pourrons affiner la référence exacte avec la longueur.";
+  } else if (rawInputLow.includes("petite poulie") || rawInputLow.includes("petit diamètre") || rawInputLow.includes("petit diametre")) {
+     symptomMsg = "Vous mentionnez une poulie de petit diamètre. Cela génère une très forte contrainte de flexion sur le dos de la courroie.";
+     solutionMsg = "Il est fortement recommandé d'utiliser une courroie crantée pour épouser la courbure sans s'échauffer ni se cisailler prématurément.";
+     fallbackProp = "Vous pouvez vous orienter vers un profil cranté (XPZ, XPA ou AX) pour maximiser la durée de vie sur ce diamètre.";
+  } else if (rawInputLow.includes("bruit") || rawInputLow.includes("vibration")) {
+     symptomMsg = "Vous rencontrez un souci de bruit ou de vibration. C'est souvent lié à l'usure de la courroie mais pas uniquement.";
+     solutionMsg = "Je vous conseille de vérifier le jeu dans vos roulements, l'alignement des poulies et la tension de la courroie avant le remontage neuf.";
+     fallbackProp = "Je peux tout à fait vous proposer une courroie de remplacement standard pour éliminer l'usure de l'équation. Nous affinerons la référence exacte avec vos cotes.";
+  } else if (rawInputLow.includes("cassée") || rawInputLow.includes("pas de reference") || rawInputLow.includes("pas de ref") || rawInputLow.includes("plus de reference") || rawInputLow.includes("illisible")) {
+     symptomMsg = "Vous n'avez plus la courroie d'origine ou la référence n'est plus lisible.";
+     solutionMsg = "Utilisez cette méthode simple : prenez une cordelette ou un mètre ruban souple, et faites le tour complet des poulies **en restant bien au fond de la gorge** pour mesurer la longueur primitive.";
+     fallbackProp = "À partir de cette mesure et de la largeur de la poulie, je vous orienterai précisément vers la bonne référence (profil A, B, Z...).";
+  }
 
   // Dimensions : largeur x hauteur 
   const dimRegex = /(?<!\d\s*[xX*]\s*)\b(\d+)\s*[xX*]\s*(\d+)\b(?!\s*[xX*]\s*\d)/;
@@ -235,69 +260,145 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   if (qtyMatch) qtyStr = qtyMatch[1];
 
   let probableProfile = "";
+  let expectedProfileFromDim = "";
 
   if (matchDim) {
     const width = parseInt(matchDim[1], 10);
     const height = parseInt(matchDim[2], 10);
     
-    if (width === 13 && height === 8) probableProfile = "A";
-    else if (width === 13 && height === 10) probableProfile = "SPA";
-    else if (width === 17 && height === 11) probableProfile = "B";
-    else if ((width === 16 && height === 13) || (width === 17 && height === 14)) probableProfile = "SPB";
-    else if (width === 10 && height === 6) probableProfile = "Z";
-    else if (width === 10 && height === 8) probableProfile = "SPZ";
-    else if (width === 22 && height === 14) probableProfile = "C";
-    else if (width === 22 && height === 18) probableProfile = "SPC";
-  } else if (matchProfile) {
-    probableProfile = matchProfile[1].toUpperCase();
+    if (width === 13 && height === 8) expectedProfileFromDim = "A";
+    else if (width === 13 && height === 10) expectedProfileFromDim = "SPA";
+    else if (width === 17 && height === 11) expectedProfileFromDim = "B";
+    else if ((width === 16 && height === 13) || (width === 17 && height === 14)) expectedProfileFromDim = "SPB";
+    else if (width === 10 && height === 6) expectedProfileFromDim = "Z";
+    else if (width === 10 && height === 8) expectedProfileFromDim = "SPZ";
+    else if (width === 22 && height === 14) expectedProfileFromDim = "C";
+    else if (width === 22 && height === 18) expectedProfileFromDim = "SPC";
+
+    probableProfile = expectedProfileFromDim;
+  } 
+  
+  let explicitProfile = "";
+  if (matchProfile) {
+    explicitProfile = matchProfile[1].toUpperCase();
   } else if (letterMatch && ['a','b','c','z'].includes(letterMatch[1])) {
-    probableProfile = letterMatch[1].toUpperCase();
-    lengthStr = letterMatch[2]; // implicit length
+    explicitProfile = letterMatch[1].toUpperCase();
+    if (!lengthStr) lengthStr = letterMatch[2]; // implicit length
   }
 
-  // If we have a full identification:
-  if (probableProfile && lengthStr) {
-     const lenPart = lengthType ? `${lengthType.toUpperCase()} ${lengthStr}` : `${lengthStr}`;
-     const dimText = matchDim ? ` section ${matchDim[1]}x${matchDim[2]}` : ``;
-     const finalProfileText = matchDim ? ` profil ${probableProfile}` : ` profil ${probableProfile}`;
-     const dimDesc = dimText + finalProfileText;
-     const qtyText = qtyStr ? `, quantité ${qtyStr}` : "";
-     
-     message = `Vous recherchez : une courroie trapézoïdale${dimDesc} longueur ${lenPart} mm${qtyText}.`;
-     
-     if (!qtyStr) {
-         needsCascade = true;
-         message += "\n\nQuelle quantité souhaitez-vous ?";
+  // Detect Mismatch between Dimensions and Profile
+  if (expectedProfileFromDim && explicitProfile) {
+     // A vs AX is fine, A vs B is not.
+     if (expectedProfileFromDim !== explicitProfile && expectedProfileFromDim.replace('X','') !== explicitProfile.replace('X','')) {
+        const getDimensionsOfProfile = (profile: string) => {
+           switch(profile.replace('X','')) {
+              case "A": return "13x8";
+              case "SPA": return "13x10";
+              case "B": return "17x11";
+              case "SPB": return "16x13";
+              case "Z": return "10x6";
+              case "SPZ": return "10x8";
+              case "C": return "22x14";
+              case "SPC": return "22x18";
+              default: return "inconnue";
+           }
+        };
+
+        let actualProfileDims = getDimensionsOfProfile(explicitProfile);
+        let correctionMsg = `Attention, une section **${matchDim![1]}x${matchDim![2]}** correspond à un profil **${expectedProfileFromDim}** et non **${explicitProfile}**.\n\nLe profil **${explicitProfile}** est en **${actualProfileDims}**.\nJe vous recommande donc de vérifier la section avant de valider.`;
+        
+         let orientHook = "";
+         if (actualProfileDims !== "inconnue") {
+             orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
+         }
+
+         let struct = `1. 🔍 Diagnostic\n${symptomMsg || "Recherche de courroie avec incohérence technique."}\n\n`;
+         struct += `2. 🛠 Solution\n${correctionMsg}\n\n`;
+         struct += `3. 📦 Proposition\nJe vous recommande de vérifier si le marquage lu est bien **${explicitProfile}** ou si la section mesurée est réellement **${matchDim![1]}x${matchDim![2]}**, car ces deux informations ne correspondent pas au même profil.${orientHook}\n\n`;
+         struct += `4. ❓ Question utile\nLaquelle des deux informations avez-vous lue directement sur la courroie ?`;
+         
+        needsCascade = true;
+        return { matches: true, message: struct, tags, needsCascade, detectedType };
+     } else {
+        probableProfile = explicitProfile; // Overwrite expected if they match or are a crantée variant (AX overrides A)
      }
-     return { matches: true, message, tags, needsCascade, detectedType };
+  } else if (explicitProfile) {
+     probableProfile = explicitProfile;
   }
 
-  // If only dimensions or profile
+  // Construction of 4-block if data exists
   if (probableProfile) {
-    message = `D’après vos dimensions, cela correspond probablement à une courroie profil ${probableProfile}.`;
-    
-    if (probableProfile === "A") message += "\nProfils proches possibles : SPA, 4L.";
-    else if (probableProfile === "B") message += "\nProfils proches possibles : SPB, 5L.";
-    else if (probableProfile === "Z") message += "\nProfils proches possibles : SPZ, 3L.";
-    
-    message += "\nSouhaitez-vous que je vous propose un modèle compatible ? Pouvez-vous préciser la longueur (idéalement Li, Le ou Ld) ?";
-    needsCascade = true;
-    return { matches: true, message, tags, needsCascade, detectedType };
+     let diag = symptomMsg || `Vous recherchez une courroie profil **${probableProfile}**.`;
+     let sol = solutionMsg || "Ce profil est un standard de l'industrie. Je peux vous orienter vers un modèle adapté.";
+     let prop = "";
+     let q = "";
+
+     if (lengthStr) {
+        // CompareBelt
+        let val = parseInt(lengthStr, 10);
+        let lType = lengthType ? lengthType : "Ld";
+        if (lType.toLowerCase() === "l") lType = "Ld"; // Normalize
+        
+        // Ensure case is proper for standard Ld syntax
+        lType = lType.charAt(0).toUpperCase() + lType.slice(1).toLowerCase();
+        if (lType === "") lType = "Ld";
+
+        let converted = compareBelt(probableProfile.replace("X",""), lType, val);
+        const matchConv = converted.message.match(/→ Li : \*\*\d+\*\*\n→ Le : \*\*\d+\*\*\n→ Ld : \*\*\d+\*\*/);
+        
+        prop = `✅ Je peux vous proposer une référence compatible.\nRéférence recommandée : **${probableProfile} ${val} ${lType}**\n*(Équivalence : ${matchConv ? matchConv[0].replace(/\n/g, " | ") : ""})*`;
+        if (qtyStr) {
+           prop += `\nQuantité enregistrée : ${qtyStr}`;
+           q = "Pour me confirmer cette compatibilité, pouvez-vous m'indiquer la machine sur laquelle elle sera montée ?";
+        } else {
+           q = "Afin de m'assurer que ce profil passera correctement, sur quel type de machine/poulie est-elle montée ?";
+        }
+        needsCascade = true;
+     } else {
+        if (matchDim && !explicitProfile) {
+           prop = `Les dimensions ${matchDim[1]}x${matchDim[2]} désignent généralement le profil **${probableProfile}**.\n*(Équivalence conditionnelle)*`;
+        } else {
+           prop = `Le profil **${probableProfile}** est repéré. Nous allons finaliser la référence ensemble.`;
+        }
+        q = "Je peux vous proposer une référence compatible. Avez-vous la longueur précise de votre courroie (Ld, Li ou extérieure) ?";
+        needsCascade = true;
+     }
+
+     let struct2 = `1. 🔍 Diagnostic\n${diag}\n\n`;
+     struct2 += `2. 🛠 Solution\n${sol}\n\n`;
+     
+     // Orientation hook ONLY at the very end of block 3
+     let orientHook = "";
+     if (symptomMsg || lengthStr || matchDim || explicitProfile) {
+         orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
+     }
+     
+     struct2 += `3. 📦 Proposition\n${prop}${orientHook}\n\n`;
+     struct2 = struct2.trim() + "\n\n"; // Ensure no trailing double newline if hook is there, tight end.
+     struct2 += `4. ❓ Question utile\n${q}`;
+
+     return { matches: true, message: struct2, tags, needsCascade, detectedType };
   }
 
   // If context but no strict dims:
   if (isCourroieContext) {
-     if (rawInputLow.includes("compresseur")) {
-        message = "Dans ce type d’application, il s’agit généralement d’une courroie trapézoïdale ou poly-V.\nPouvez-vous me donner la largeur ou la longueur ?";
-     } else if (rawInputLow.includes("voiture") || rawInputLow.includes("auto")) {
-        message = "Dans le domaine automobile, il s'agit généralement d'une courroie d'accessoire (poly-V) ou de distribution (crantée).\nPouvez-vous me donner une largeur ou une référence ?";
-     } else if (rawInputLow.includes("cassée") || rawInputLow.includes("pas de ref") || rawInputLow.includes("inconnu") || rawInputLow.includes("plus de reference") || rawInputLow.includes("illisible")) {
-        message = "Vous pouvez utiliser une corde ou un mètre souple : \nfaites le tour complet des poulies en fond de gorge pour obtenir une longueur approximative.\n\nPouvez-vous me donner cette mesure ?";
-     } else {
-        message = "Vous recherchez une courroie.\nVous pouvez mesurer avec une corde en faisant le tour des poulies (en fond de gorge) pour obtenir une longueur approximative.\nPouvez-vous me donner cette mesure ou une référence ?";
+     let diag = symptomMsg || "Sans information précise, il est difficile de définir exactement le profil.";
+     let sol = solutionMsg || "Dans la plupart des cas, il s'agit d'une courroie trapézoïdale standard (type A, SPA ou SPZ selon la largeur).";
+     let prop = fallbackProp || "Je peux vous proposer l'une de ces gammes classiques dès que nous avons les mesures. C'est la solution la plus fiable.";
+     let q = "Pouvez-vous me donner la largeur ou la longueur de la courroie ?";
+
+     let struct3 = `1. 🔍 Diagnostic\n${diag}\n\n`;
+     struct3 += `2. 🛠 Solution\n${sol}\n\n`;
+     
+     let orientHook = "";
+     if (symptomMsg) {
+         orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
      }
+     struct3 += `3. 📦 Proposition\n${prop}${orientHook}\n\n`;
+     struct3 += `4. ❓ Question utile\n${q}`;
+
      needsCascade = true;
-     return { matches: true, message, tags, needsCascade, detectedType };
+     return { matches: true, message: struct3, tags, needsCascade, detectedType };
   }
 
   return { matches: false, message: "", tags: [], needsCascade: false };
@@ -556,3 +657,4 @@ export const compareBeltReverse = (width: number, height: number, lengthType: st
     message: resultMsg
   };
 };
+
