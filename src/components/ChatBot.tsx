@@ -483,16 +483,20 @@ export default function ChatBot() {
                            onChange={e => setCompProfile(e.target.value)}
                            className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                          >
-                            <option value="A">A / 13x8</option>
-                            <option value="B">B / 17x11</option>
+                            <option value="A">A / 4L / 13x8</option>
+                            <option value="AX">AX</option>
+                            <option value="B">B / 5L / 17x11</option>
+                            <option value="BX">BX</option>
                             <option value="C">C / 22x14</option>
-                            <option value="Z">Z / 10x6</option>
+                            <option value="CX">CX</option>
+                            <option value="Z">Z / 3L / 10x6</option>
                             <option value="SPA">SPA</option>
                             <option value="SPB">SPB</option>
                             <option value="SPC">SPC</option>
                             <option value="SPZ">SPZ</option>
                             <option value="XPA">XPA</option>
                             <option value="XPB">XPB</option>
+                            <option value="XPC">XPC</option>
                             <option value="XPZ">XPZ</option>
                          </select>
                        </label>
