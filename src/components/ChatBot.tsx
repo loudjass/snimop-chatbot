@@ -4,15 +4,16 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { analyzeBelt, analyzeBearing, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
+import { analyzeBelt, analyzeBearing, analyzeGeneral, compareBelt, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
 
-export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece";
+export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece" | "compare";
 
 interface Message {
   id: string;
   sender: "bot" | "user";
   text: string;
   options?: { id: string; label: string; action: () => void; icon?: React.ReactNode }[];
+  isCustomUI?: "comparator";
 }
 
 export default function ChatBot() {
@@ -23,6 +24,11 @@ export default function ChatBot() {
     tags: []
   });
   
+  // Belt Comparator State
+  const [compProfile, setCompProfile] = useState("SPA");
+  const [compLengthType, setCompLengthType] = useState("Li");
+  const [compValue, setCompValue] = useState("");
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const initialMessage: Message = {
@@ -31,6 +37,7 @@ export default function ChatBot() {
     text: "Bonjour ! Je suis l'assistant virtuel de SNIMOP. Comment puis-je vous aider aujourd'hui ?",
     options: [
       { id: "courroie", label: "Identifier ma courroie", action: () => startFlow("courroie"), icon: <CircleDashed size={16} /> },
+      { id: "compare", label: "Comparer / convertir ma courroie", action: () => startFlow("compare"), icon: <Settings size={16} /> },
       { id: "roulement", label: "Identifier mon roulement", action: () => startFlow("roulement"), icon: <Settings size={16} /> },
       { id: "inconnu", label: "Je ne connais pas la référence", action: () => startFlow("inconnu"), icon: <Search size={16} /> },
       { id: "devis", label: "Demande de devis intervention", action: () => startFlow("devis"), icon: <FileText size={16} /> },
@@ -53,8 +60,8 @@ export default function ChatBot() {
     messagesRef.current = messages;
   }, [messages]);
 
-  const addMessage = (sender: "bot" | "user", text: string, options?: Message["options"]) => {
-    setMessages(prev => [...prev, { id: Date.now().toString() + Math.random(), sender, text, options }]);
+  const addMessage = (sender: "bot" | "user", text: string, options?: Message["options"], isCustomUI?: "comparator") => {
+    setMessages(prev => [...prev, { id: Date.now().toString() + Math.random(), sender, text, options, isCustomUI }]);
   };
 
   const addTag = (tag: RequestTag) => {
@@ -64,7 +71,7 @@ export default function ChatBot() {
     }));
   };
 
-  const startFlow = (flowId: FlowCategory) => {
+  const startFlow = (flowId: FlowCategory | "compare") => {
     const option = messages[messages.length - 1].options?.find(o => o.id === flowId);
     if (!option) return;
 
@@ -77,6 +84,11 @@ export default function ChatBot() {
 
     setTimeout(() => {
       let nextText = "";
+      if (flowId === "compare") {
+        addMessage("bot", "Sélectionnez votre profil, le type de longueur et entrez la valeur pour voir l'équivalence :", undefined, "comparator");
+        return;
+      }
+      
       if (flowId === "courroie") {
         addTag("COURROIE");
         nextText = "Très bien. Pouvez-vous me donner les dimensions de votre courroie (largeur, hauteur, longueur) ou sa référence si vous la connaissez ?";
@@ -134,33 +146,18 @@ export default function ChatBot() {
 
   const finalizeRequest = () => {
     setTimeout(() => {
-      const summary = `Voici votre demande :
-- Type de requête : ${currentFlow}
-- Informations partagées : Ces données ont été enregistrées.
-- Photo fournie : ${requestData.hasPhoto ? "Oui" : "Non"}
+      const uMsgs = messagesRef.current.filter(m => m.sender === "user" && m.id !== "initial").map(m => m.text);
+      const finalData = {
+         ...requestData,
+         completionScore: calculateCompletionScore(requestData, uMsgs),
+         whatsAppUrl: generateWhatsAppLink(requestData, uMsgs)
+      };
 
-⚠️ Les identifications proposées restent à confirmer par notre équipe technique SNIMOP avant validation définitive.`;
-
-      addMessage("bot", summary);
-
-      setTimeout(() => {
-        const uMsgs = messagesRef.current.filter(m => m.sender === "user" && m.id !== "initial").map(m => m.text);
-        const finalData = {
-           ...requestData,
-           completionScore: calculateCompletionScore(requestData, uMsgs),
-           whatsAppUrl: generateWhatsAppLink(requestData, uMsgs)
-        };
-
-        addMessage("bot", "Votre demande a bien été enregistrée. Un conseiller SNIMOP va vous contacter rapidement. Vous pouvez aussi nous l'envoyer directement par WhatsApp :", [
-          { id: "whatsapp", label: "Envoyer ma demande par WhatsApp", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> }
-        ]);
-        
-        // Save to localStorage
-        saveRequest(finalData);
-
-        // Remove auto-reset so user can click WhatsApp
-      }, 2000);
-
+      addMessage("bot", "Parfait, votre demande est prête.\nNous pouvons vous envoyer une solution rapidement.\n\nVous pouvez l’envoyer directement via WhatsApp ci-dessous.", [
+        { id: "whatsapp", label: "Envoyer ma demande par WhatsApp", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> }
+      ]);
+      
+      saveRequest(finalData);
     }, 800);
   };
 
@@ -174,20 +171,20 @@ export default function ChatBot() {
            addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Nous allons tout de même étudier votre demande avec ces éléments.");
            setCascadePending(false);
            setStep(current + 1);
-           setTimeout(() => addMessage("bot", "Parfait. Pour terminer, pouvez-vous me laisser vos coordonnées (Nom, Téléphone, Mail) ?"), 800);
+           setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
            return;
         } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
            addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Si vous ne les avez pas, nous pouvons quand même étudier votre demande avec les éléments disponibles.");
            setCascadePending(false);
            setStep(current + 1);
-           setTimeout(() => addMessage("bot", "Parfait. Pour terminer, pouvez-vous me laisser vos coordonnées (Nom, Téléphone, Mail) ?"), 800);
+           setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
            return;
         }
         setCascadePending(false);
         setStep(current + 1);
         
         if (currentFlow === "courroie" || currentFlow === "roulement") {
-           addMessage("bot", "Parfait. Pour terminer, pouvez-vous me laisser vos coordonnées (Nom, Téléphone, Mail) ?");
+           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
         }
         return;
       }
@@ -215,7 +212,7 @@ export default function ChatBot() {
             setTimeout(() => addMessage("bot", "Quelle quantité vous faut-il et à quoi sert cette courroie (application) ?"), 800);
           }
         } else if (current === 2) {
-           addMessage("bot", "Merci. Pouvez-vous me laisser vos coordonnées (Nom, Société, Téléphone) pour vous recontacter ?");
+           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
         } else {
            finalizeRequest();
         }
@@ -242,7 +239,7 @@ export default function ChatBot() {
             setTimeout(() => addMessage("bot", "Quelle est l'application ou la machine de destination ?"), 800);
           }
         } else if (current === 2) {
-          addMessage("bot", "Parfait. Pour terminer, pouvez-vous me laisser vos coordonnées (Nom, Téléphone, Mail) ?");
+          addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
         } else {
           finalizeRequest();
         }
@@ -250,10 +247,10 @@ export default function ChatBot() {
 
       else if (currentFlow === "devis") {
         if (current === 1) {
-          addMessage("bot", "Merci pour ces précisions. Où se situe le site d'intervention et quel est le degré d'urgence ?");
+          addMessage("bot", "Merci pour ces précisions. Dans quel contexte l'équipement est-il utilisé et quelle est l'urgence ? (Vous pouvez aussi nous envoyer une photo du problème ou de la plaque signalétique)");
           addTag("URGENT");
         } else if (current === 2) {
-          addMessage("bot", "C'est noté. Afin d'éditer un devis et de vous recontacter, merci de m'indiquer vos coordonnées complètes.");
+          addMessage("bot", "C'est noté. Afin d'éditer un devis et de vous recontacter avec une proposition propre, merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
         } else {
           finalizeRequest();
         }
@@ -261,9 +258,26 @@ export default function ChatBot() {
 
       else if (currentFlow === "inconnu" || currentFlow === "piece") {
         if (current === 1) {
-          addMessage("bot", "Nous pouvons regarder cela. Le mieux est de nous indiquer les dimensions si vous les avez et la quantité souhaitée.");
+          const analysis = analyzeGeneral(input);
+          if (analysis.matches) {
+            analysis.tags.forEach(addTag);
+            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, productType: analysis.detectedType }));
+            if (analysis.needsCascade) {
+               setCascadePending(true);
+               addMessage("bot", analysis.message, [
+                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+               ]);
+            } else {
+               addMessage("bot", analysis.message);
+               setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
+            }
+          } else {
+             addMessage("bot", "Pour éviter toute erreur, pouvez-vous nous préciser l'utilisation ou nous fournir une photo ?");
+             setCascadePending(true);
+          }
         } else if (current === 2) {
-          addMessage("bot", "Merci. Pouvez-vous me laisser vos coordonnées (Nom, Société, Téléphone) pour vous recontacter avec une solution ?");
+          addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
         } else {
           finalizeRequest();
         }
@@ -281,6 +295,36 @@ export default function ChatBot() {
     setInputValue("");
 
     advanceFlow(savedInput);
+  };
+
+  const handleComparatorSubmit = () => {
+    const val = parseFloat(compValue);
+    if (!val || isNaN(val)) return;
+
+    const result = compareBelt(compProfile, compLengthType, val);
+    
+    // Inject the simulated thought process from the user into chat history
+    addMessage("user", `Comparaison : ${compProfile} ${val} ${compLengthType}`);
+    
+    // Give the bot's calculated response
+    setTimeout(() => {
+      addMessage("bot", result.message);
+      
+      // Follow up with normal flow integration
+      setTimeout(() => {
+        addTag("COURROIE");
+        setRequestData(prev => ({ 
+           ...prev, 
+           flowType: "courroie", 
+           aiAnalysis: `Comparaison : ${compProfile} ${val} ${compLengthType} -> Equivalent : ${result.equivalent}`,
+           dimensions: `${compValue} ${compLengthType}`
+        }));
+        setCurrentFlow("courroie");
+        setStep(2);
+        addMessage("bot", "Si vous souhaitez commander ou demander un prix pour cette courroie équivalente, quelle quantité vous faut-il et à quoi sert-elle (application) ?");
+      }, 1500);
+      
+    }, 600);
   };
 
   return (
@@ -352,6 +396,66 @@ export default function ChatBot() {
                         <ChevronRight size={16} className="text-slate-400 group-hover:text-brand-blue" />
                       </button>
                     ))}
+                  </div>
+                )}
+
+                {/* Custom Comparator UI */}
+                {message.isCustomUI === "comparator" && message.sender === "bot" && (
+                  <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 dark:bg-slate-900/50 dark:border-slate-700 flex flex-col gap-4">
+                     <div className="grid grid-cols-2 gap-3">
+                       <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                         Profil (Section)
+                         <select 
+                           value={compProfile} 
+                           onChange={e => setCompProfile(e.target.value)}
+                           className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                         >
+                            <option value="A">A / 13x8</option>
+                            <option value="B">B / 17x11</option>
+                            <option value="C">C / 22x14</option>
+                            <option value="Z">Z / 10x6</option>
+                            <option value="SPA">SPA</option>
+                            <option value="SPB">SPB</option>
+                            <option value="SPC">SPC</option>
+                            <option value="SPZ">SPZ</option>
+                            <option value="XPA">XPA</option>
+                            <option value="XPB">XPB</option>
+                            <option value="XPZ">XPZ</option>
+                         </select>
+                       </label>
+
+                       <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                         Type Longueur
+                         <select 
+                           value={compLengthType} 
+                           onChange={e => setCompLengthType(e.target.value)}
+                           className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                         >
+                            <option value="Li">Li (intérieure)</option>
+                            <option value="Le">Le (extérieure)</option>
+                            <option value="Ld">Ld (primitive)</option>
+                         </select>
+                       </label>
+                     </div>
+
+                     <label className="flex flex-col text-sm font-semibold text-slate-700 dark:text-slate-300">
+                         Valeur (mm)
+                         <input 
+                           type="number"
+                           placeholder="Ex: 1250"
+                           value={compValue}
+                           onChange={e => setCompValue(e.target.value)}
+                           className="mt-1 p-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                         />
+                     </label>
+
+                     <button 
+                       onClick={handleComparatorSubmit}
+                       disabled={!compValue}
+                       className="w-full mt-2 py-3 rounded-lg bg-brand-blue text-white font-medium hover:bg-brand-blue-light transition-colors disabled:opacity-50"
+                     >
+                       Calculer l'équivalence
+                     </button>
                   </div>
                 )}
               </div>
