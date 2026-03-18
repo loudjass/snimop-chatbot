@@ -176,11 +176,11 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     else if (width === 22 && height === 18) probableProfile = "SPC";
     
     if (probableProfile) {
-       message = `[À confirmer]\nCette dimension ${width}x${height} correspond à un profil probable ${probableProfile}, mais cela ne permet pas de valider avec certitude.\n\nPour éviter toute erreur, merci de nous préciser la référence exacte ou la longueur (Li, Le ou Ld).`;
+       message = `[Identification probable]\nIl s'agit probablement d'un profil ${probableProfile}, mais pour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.`;
        needsCascade = true;
        return { matches: true, message, tags, needsCascade, detectedType };
     } else {
-       message = `[À confirmer]\nLes dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.\n\nPour éviter toute erreur, merci de nous préciser la référence exacte ou la longueur.`;
+       message = `[À confirmer]\nLes dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.\n\nPour nous permettre de vous aider efficacement, merci de nous préciser la référence exacte ou la longueur.`;
        needsCascade = true;
        return { matches: true, message, tags, needsCascade, detectedType };
     }
@@ -212,9 +212,9 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     needsCascade = true;
     if (hasLength) {
        message = message.replace("[Identification probable]", "[Identification certaine]");
-       message += "\nPour sécuriser la commande, merci de nous confirmer si la longueur donnée est en Li (intérieure), Le (extérieure) ou Ld (primitive).\nVous pouvez aussi nous envoyer une photo.";
+       message += "\nPour sécuriser parfaitement la commande, merci de nous confirmer si la longueur donnée est en Li (intérieure), Le (extérieure) ou Ld (primitive).\nVous pouvez aussi nous envoyer une photo.";
     } else {
-       message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.";
+       message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nNous restons à votre disposition pour vous guider si besoin.";
     }
     return { matches: true, message, tags, needsCascade, detectedType };
   }
