@@ -167,25 +167,27 @@ export default function ChatBot() {
     setTimeout(() => {
       // Priority Check: Cascade follow-up logic
       if (cascadePending) {
-        if (input === "[FAST_MODE]" || input === "[FORCE_SEND]") {
-           addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Nous allons tout de même étudier votre demande avec ces éléments.");
-           setCascadePending(false);
-           setStep(current + 1);
-           setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
-           return;
-        } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
-           addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Si vous ne les avez pas, nous pouvons quand même étudier votre demande avec les éléments disponibles.");
-           setCascadePending(false);
-           setStep(current + 1);
-           setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
-           return;
-        }
         setCascadePending(false);
-        setStep(current + 1);
-        
-        if (currentFlow === "courroie" || currentFlow === "roulement") {
-           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+        if (input === "[FAST_MODE]" || input === "[FORCE_SEND]") {
+           addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Nous allons tout de même l'ajouter à votre dossier.");
+        } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
+           addMessage("bot", "C'est noté. Si vous n'avez pas toutes les données, l'équipe regardera avec ces éléments.");
+        } else {
+           addMessage("bot", "C'est noté pour cette précision technique.");
         }
+        
+        setTimeout(() => {
+          if (currentFlow === "courroie") {
+             addMessage("bot", "Quelle quantité vous faut-il et à quoi sert cette courroie (application) ?");
+          } else if (currentFlow === "roulement") {
+             addMessage("bot", "Quelle est l'application ou la machine de destination ?");
+          } else if (currentFlow === "inconnu" || currentFlow === "piece") {
+             addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions techniques ?");
+          } else {
+             addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+             setStep(current + 1);
+          }
+        }, 800);
         return;
       }
 
@@ -258,7 +260,14 @@ export default function ChatBot() {
 
       else if (currentFlow === "inconnu" || currentFlow === "piece") {
         if (current === 1) {
-          const analysis = analyzeGeneral(input);
+          let analysis = analyzeBelt(input);
+          if (!analysis.matches) {
+            analysis = analyzeBearing(input);
+            if (!analysis.matches) {
+              analysis = analyzeGeneral(input);
+            }
+          }
+
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
             setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, productType: analysis.detectedType }));
@@ -270,10 +279,10 @@ export default function ChatBot() {
                ]);
             } else {
                addMessage("bot", analysis.message);
-               setTimeout(() => addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions techniques ?"), 800);
             }
           } else {
-             addMessage("bot", "Pour éviter toute erreur, pouvez-vous nous préciser l'utilisation ou nous fournir une photo ?");
+             addMessage("bot", "Pour éviter toute erreur, pouvez-vous nous préciser l'utilisation ou nous fournir une photo de la pièce ?");
              setCascadePending(true);
           }
         } else if (current === 2) {
