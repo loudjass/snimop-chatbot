@@ -166,20 +166,23 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     const width = parseInt(matchDim[1], 10);
     const height = parseInt(matchDim[2], 10);
     
-    if ((width >= 12 && width <= 14) && (height >= 7 && height <= 9)) {
-      probableProfile = "A ou SPA";
-    } else if ((width >= 16 && width <= 18) && (height >= 10 && height <= 12)) {
-      probableProfile = "B ou SPB";
-    } else if (width === 10 && height === 6) {
-      probableProfile = "Z ou SPZ";
-    } else if (width === 22 && height === 14) {
-      probableProfile = "C ou SPC";
-    }
+    if (width === 13 && height === 8) probableProfile = "A";
+    else if (width === 13 && height === 10) probableProfile = "SPA";
+    else if (width === 17 && height === 11) probableProfile = "B";
+    else if ((width === 16 && height === 13) || (width === 17 && height === 14)) probableProfile = "SPB";
+    else if (width === 10 && height === 6) probableProfile = "Z";
+    else if (width === 10 && height === 8) probableProfile = "SPZ";
+    else if (width === 22 && height === 14) probableProfile = "C";
+    else if (width === 22 && height === 18) probableProfile = "SPC";
     
     if (probableProfile) {
-       message = `La dimension ${width}x${height} correspond au profil probable de votre courroie (profil ${probableProfile}).`;
+       message = `[À confirmer]\nCette dimension ${width}x${height} correspond à un profil probable ${probableProfile}, mais cela ne permet pas de valider avec certitude.\n\nPour éviter toute erreur, merci de nous préciser la référence exacte ou la longueur (Li, Le ou Ld).`;
+       needsCascade = true;
+       return { matches: true, message, tags, needsCascade, detectedType };
     } else {
-       message = `Les dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.`;
+       message = `[À confirmer]\nLes dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.\n\nPour éviter toute erreur, merci de nous préciser la référence exacte ou la longueur.`;
+       needsCascade = true;
+       return { matches: true, message, tags, needsCascade, detectedType };
     }
   }
 
@@ -187,26 +190,32 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   const profileRegex = /\b(spz|spa|spb|spc|xpz|xpa|xpb|xpc|t5|t10|at10|8m|14m|ax|bx|cx|dx|[a-e]|3l|4l|5l)\b/;
   const matchProfile = normInput.match(profileRegex);
   
+  let hasLength = normInput.match(/\d{3,}/); // basic check for length
+
   if (matchProfile) {
     const p = matchProfile[1].toUpperCase();
     if (p.startsWith('SP') || ['A','B','C','D','E','Z'].includes(p)) {
-      message = `Cela correspond probablement à une courroie trapézoïdale de profil ${p}.`;
+      message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale de profil ${p}.`;
     } else if (p.startsWith('XP') || p.startsWith('AX') || p.startsWith('BX') || p.startsWith('CX')) {
-       message = `Cela correspond probablement à une courroie trapézoïdale crantée de profil ${p}.`;
+       message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale crantée de profil ${p}.`;
     } else {
-      message = `Cela correspond probablement à une courroie (profil ${p} probable).`;
+      message = `[Identification probable]\nCela correspond probablement à une courroie (profil ${p} probable).`;
     }
   } else if (normInput.match(/\b([a-z])(\d{2,})\b/)) {
-      // Catch things like A50, B60 directly
       const letterMatch = normInput.match(/\b([a-z])(\d{2,})\b/);
       if (letterMatch && ['a','b','c','z'].includes(letterMatch[1])) {
-         message = `Cela correspond probablement à une courroie trapézoïdale classique type ${letterMatch[1].toUpperCase()}${letterMatch[2]} (valeur indicative). \n\n⚠️ Équivalence à confirmer selon application.`;
+         message = `[Identification probable]\nCela correspond probablement à une courroie trapézoïdale classique type ${letterMatch[1].toUpperCase()}${letterMatch[2]} (valeur indicative).\n\n⚠️ Équivalence sous réserve selon l'application.`;
       }
   }
 
   if (message) {
     needsCascade = true;
-    message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.";
+    if (hasLength) {
+       message = message.replace("[Identification probable]", "[Identification certaine]");
+       message += "\nPour sécuriser la commande, merci de nous confirmer si la longueur donnée est en Li (intérieure), Le (extérieure) ou Ld (primitive).\nVous pouvez aussi nous envoyer une photo.";
+    } else {
+       message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.";
+    }
     return { matches: true, message, tags, needsCascade, detectedType };
   }
   
@@ -251,21 +260,24 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
   }
 
   if (likelyType) {
-    message = `Les dimensions ou référence correspondent probablement à un roulement type ${likelyType}.`;
+    message = `[Identification probable]\nLes dimensions ou référence correspondent probablement à un roulement type ${likelyType}.`;
   }
 
   // Suffixes (2RS, ZZ, C3)
   if (normInput.includes('2rs') || normInput.includes('ddu') || normInput.includes('llu')) {
-    message += (message ? "\n" : "Cela correspond probablement à un ") + "Ce roulement est en version étanche (2RS / DDU / LLU).";
+    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est en version étanche (2RS / DDU / LLU).";
   } else if (normInput.includes('zz')) {
-    message += (message ? "\n" : "Cela correspond probablement à un ") + "Ce roulement est en version avec flasques métal (ZZ).";
+    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est en version avec flasques métal (ZZ).";
   } else if (normInput.includes('c3')) {
-    message += (message ? "\n" : "Cela correspond probablement à un ") + "Ce roulement est à jeu augmenté (C3).";
+    message += (message ? "\n" : "[Identification probable]\nCela correspond probablement à un ") + "Ce roulement est à jeu augmenté (C3).";
   }
 
   if (message) {
+    if (matchNum) {
+       message = message.replace("[Identification probable]", "[Identification certaine]");
+    }
     needsCascade = true;
-    message += `\n\nPouvez-vous nous confirmer le type :\n- ouvert\n- 2RS (étanche)\n- ZZ (flasques métal)\n\nNous pouvons vous proposer 3 gammes :\n- économique (ZEN / générique)\n- standard (NTN / SNR)\n- premium (SKF / FAG)\n\nQuelle quantité souhaitez-vous ?`;
+    message += `\n\nPour éviter toute erreur, merci de nous confirmer le type :\n- ouvert\n- 2RS (étanche)\n- ZZ (flasques métal)\n\nNous pouvons vous proposer 3 gammes :\n- économique (ZEN / générique)\n- standard (NTN / SNR)\n- premium (SKF / FAG)\n\nQuelle quantité souhaitez-vous ?`;
     return { matches: true, message, tags, needsCascade, detectedType };
   }
   
@@ -276,11 +288,11 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   const normInput = input.toLowerCase();
   
   if (normInput.match(/ucp|ucf|ucfl|uct|ucfc|insert uc|palier/)) {
-    let msg = "Cela correspond probablement à un palier.";
+    let msg = "[Identification probable]\nCela correspond probablement à un palier.";
     if (normInput.match(/arbre 20|20\s*mm/)) {
-      msg = "D'après le diamètre d'arbre de 20mm, cela correspond probablement à la série 204 (ex: UCFL204, etc). Il est interchangeable toutes marques.";
+      msg = "[Identification certaine]\nD'après le diamètre d'arbre de 20mm, cela correspond probablement à la série 204 (ex: UCFL204, etc). Il est interchangeable toutes marques.";
     } else if (normInput.match(/arbre 25|25\s*mm/)) {
-      msg = "D'après le diamètre d'arbre de 25mm, cela correspond probablement à la série 205. Il est interchangeable toutes marques.";
+      msg = "[Identification certaine]\nD'après le diamètre d'arbre de 25mm, cela correspond probablement à la série 205. Il est interchangeable toutes marques.";
     }
     return {
       matches: true,
@@ -294,7 +306,7 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   if (normInput.match(/chc|th|tf|btr|six pans creux|inox|8\.8|10\.9|12\.9|m[68]0?|vis|visserie/)) {
     return {
       matches: true,
-      message: "Cela correspond probablement à de la visserie.\n\nPour éviter toute erreur, merci de nous préciser :\n- le diamètre (M6, M8, M10…)\n- la longueur\n- le type de tête (CHC, TH, TF…)\n- la matière ou classe (inox, 8.8...) si utile.\nVous pouvez aussi nous envoyer une photo.",
+      message: "[Identification probable]\nCela correspond probablement à de la visserie.\n\nPour éviter toute erreur, merci de nous préciser :\n- le diamètre (M6, M8, M10…)\n- la longueur\n- le type de tête (CHC, TH, TF…)\n- la matière ou classe (inox, 8.8...) si utile.\nVous pouvez aussi nous envoyer une photo.",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Visserie"
@@ -375,25 +387,26 @@ export const compareBelt = (profile: string, lengthType: string, value: number):
     ld = li + map.liToLd;
   }
 
-  // Cross Equivalences from rules
   let famProfile = "";
-  if (profile === "3L") famProfile = "Z probable";
-  if (profile === "Z") famProfile = "3L selon utilisation";
+  let warning = "⚠️ *équivalence possible sous réserve.*";
   
-  if (profile === "4L") famProfile = "A probable";
-  if (profile === "A") famProfile = "SPZ (sous réserve)";
-  if (profile === "AX") famProfile = "A crantée";
+  if (profile === "3L") famProfile = "Z (équivalence possible sous réserve)";
+  if (profile === "Z") famProfile = "3L (équivalence à confirmer selon la poulie)";
+  
+  if (profile === "4L") famProfile = "A (équivalence possible sous réserve)";
+  if (profile === "A") famProfile = "SPZ (équivalence à confirmer selon la poulie, SPZ ≠ A direct)";
+  if (profile === "AX") famProfile = "A crantée (équivalence possible sous réserve)";
 
-  if (profile === "5L") famProfile = "B probable";
-  if (profile === "B") famProfile = "SPA (sous réserve)";
-  if (profile === "BX") famProfile = "B crantée";
+  if (profile === "5L") famProfile = "B (équivalence possible sous réserve)";
+  if (profile === "B") famProfile = "SPB (équivalence à confirmer selon la poulie, SPB ≠ B direct)";
+  if (profile === "BX") famProfile = "B crantée (équivalence possible sous réserve)";
 
-  if (profile === "C") famProfile = "SPB (sous réserve)";
+  if (profile === "C") famProfile = "SPC (équivalence à confirmer selon la poulie)";
 
-  if (profile === "XPZ") famProfile = "SPZ crantée / AVX10 probable";
-  if (profile === "XPA") famProfile = "SPA crantée / AVX13 probable";
-  if (profile === "XPB") famProfile = "SPB crantée / AVX17 probable";
-  if (profile === "XPC") famProfile = "SPC crantée probable";
+  if (profile === "XPZ") famProfile = "SPZ crantée (AVX10 automobile est différent - équivalence à confirmer)";
+  if (profile === "XPA") famProfile = "SPA crantée (AVX13 automobile est différent - équivalence à confirmer)";
+  if (profile === "XPB") famProfile = "SPB crantée (AVX17 automobile est différent - équivalence à confirmer)";
+  if (profile === "XPC") famProfile = "SPC crantée (équivalence possible sous réserve)";
 
   if (!famProfile) famProfile = `${profile} (Standard)`;
 
@@ -404,6 +417,6 @@ export const compareBelt = (profile: string, lengthType: string, value: number):
 
   return {
     equivalent,
-    message: `Profil : **${profile}**\nSaisie : **${value} ${lengthType}**\n\n→ Li : **${Math.round(li)}**\n→ Le : **${Math.round(le)}**\n→ Ld : **${Math.round(ld)}**\n\n→ équivalent : **${famProfile}**\n\n⚠️ *équivalence à confirmer selon la marque et la poulie.*`
+    message: `[À confirmer]\nProfil : **${profile}**\nSaisie : **${value} ${lengthType}**\n\n→ Li : **${Math.round(li)}**\n→ Le : **${Math.round(le)}**\n→ Ld : **${Math.round(ld)}**\n\n→ équivalent : **${famProfile}**\n\n${warning}`
   };
 };
