@@ -64,26 +64,13 @@ export const getRequests = (): StoredRequest[] => {
 export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]): string => {
   const number = process.env.NEXT_PUBLIC_SNIMOP_WHATSAPP_NUMBER || "33607877159"; 
   
-  // Extracting likely product type
   let estimatedType = "";
   if (data.flowType === "courroie") estimatedType = "Courroie";
   else if (data.flowType === "roulement") estimatedType = "Roulement";
   else estimatedType = data.flowType || "";
 
-  // Finding some keywords from AI analysis if available, but keeping it as a "Type/Section probable" plain string
-  let probableMatch = "";
-  if (data.aiAnalysis) {
-    if (data.aiAnalysis.includes("section A")) probableMatch = "Section A";
-    else if (data.aiAnalysis.includes("section B")) probableMatch = "Section B";
-    else if (data.aiAnalysis.includes("6205")) probableMatch = "6205";
-    else if (data.aiAnalysis.includes("6306")) probableMatch = "6306";
-  }
-
-  // Very basic extraction for the template, relying mostly on the raw messages if we can't parse easily
-  // Since we don't have strict entity extraction yet, we'll join the non-command messages 
-  // and dump them into a generic "Détails" section, while keeping the requested template structure.
-  
-   const cleanMessages = userMessages.filter(m => 
+  // Remove coords and UI commands from the messages to create a pure technical string
+  const cleanMessages = userMessages.filter(m => 
     !m.includes("Je n'ai pas toutes les informations") && 
     !m.includes("Envoyer quand même") &&
     !m.includes("Identifier") && 
@@ -91,32 +78,89 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
     !m.includes("Demande de devis") &&
     !m.includes("[Photo") &&
     !m.includes("Comparaison") &&
-    !m.includes(data.contactPhone || "___NO_PHONE___") &&
-    !m.includes(data.contactName || "___NO_NAME___")
+    !(data.contactPhone && m.includes(data.contactPhone)) &&
+    !(data.contactName && m.includes(data.contactName)) &&
+    !(data.contactCompany && m.includes(data.contactCompany))
   );
 
-  let detailsText = cleanMessages.join(" | ");
+  const fullText = cleanMessages.join(" ");
 
-  let productName = estimatedType || "Non spécifié";
+  let productName = estimatedType || "Non renseigné";
   if (data.tags.includes("COURROIE")) productName = "Courroie";
   else if (data.tags.includes("ROULEMENT")) productName = "Roulement";
-  else if (data.flowType === "devis") productName = "Devis d'intervention";
+  else if (data.flowType === "devis") productName = "Devis";
   else if (data.flowType === "piece" && data.productType) productName = data.productType;
-  
-  let formattedDetails = detailsText || "Non spécifiées";
 
-   // Using the exact format from requirements
-  let text = `--- DEMANDE CLIENT SNIMOP ---\n\n`;
-  text += `Type : ${data.flowType === 'devis' ? 'Devis' : 'Pièce'}\n`;
-  text += `Produit : ${productName}\n`;
-  text += `Référence : ${data.reference || "Non renseignée"}\n`;
-  text += `Dimensions : ${formattedDetails}\n`;
-  text += `Longueur : ${data.tags.includes("COURROIE") ? "A confirmer (" + formattedDetails + ")" : "N/A"}\n`;
-  text += `Quantité : ${data.quantity || "Non renseignée"}\n`;
+  // Strict Parsing Variables
+  let parsedDimensions = data.dimensions || "";
+  let parsedLength = "";
+  let parsedQuantity = data.quantity || "";
+
+  if (data.tags.includes("COURROIE")) {
+    const dimMatch = fullText.match(/\b(\d+)[xX*](\d+)\b/);
+    if (dimMatch) {
+       parsedDimensions = `${dimMatch[1]}x${dimMatch[2]}`;
+    } else {
+       const profileMatch = fullText.match(/\b(spz|spa|spb|spc|xpz|xpa|xpb|xpc|t5|t10|at10|8m|14m|ax|bx|cx|dx|[a-e]|3l|4l|5l)\b/i);
+       if (profileMatch) parsedDimensions = profileMatch[1].toUpperCase();
+    }
+    
+    const lengthMatch = fullText.match(/\b(li|le|ld)?\s*(\d{3,})\s*(li|le|ld)?\b/i);
+    if (lengthMatch) {
+       const prefix = lengthMatch[1] ? lengthMatch[1].toUpperCase() + " " : "";
+       const suffix = lengthMatch[3] ? " " + lengthMatch[3].toUpperCase() : "";
+       parsedLength = `${prefix}${lengthMatch[2]}${suffix}`.trim();
+    }
+    
+    const qtyMatch = fullText.match(/\b(\d+)\s*(p[iieè]{1,2}ce?s?|qt[ée]|unit[ée]s?)\b/i);
+    if (qtyMatch) {
+       parsedQuantity = qtyMatch[1];
+    } else {
+       const possibleNumbers = fullText.match(/\b(\d{1,2})\b/g);
+       if (possibleNumbers) {
+          const cleanNumbers = possibleNumbers.filter(n => !(dimMatch && (n === dimMatch[1] || n === dimMatch[2])));
+          if (cleanNumbers.length > 0) parsedQuantity = cleanNumbers[cleanNumbers.length - 1];
+       }
+    }
+  } else if (data.tags.includes("ROULEMENT")) {
+    const dimMatch = fullText.match(/\b(\d+)[xX*](\d+)[xX*](\d+)\b/);
+    if (dimMatch) parsedDimensions = `${dimMatch[1]}x${dimMatch[2]}x${dimMatch[3]}`;
+    const numMatch = fullText.match(/\b(6[023]\d{2}|22[23]\d{2}|30[23]\d{2}|32[02]\d{2})\b/);
+    if (numMatch && !parsedDimensions) parsedDimensions = numMatch[1];
+    
+    const qtyMatch = fullText.match(/\b(\d+)\s*(p[iieè]{1,2}ce?s?|qt[ée]|unit[ée]s?)\b/i);
+    if (qtyMatch) parsedQuantity = qtyMatch[1];
+    else {
+       const possibleNumbers = fullText.match(/\b(\d{1,2})\b/g);
+       if (possibleNumbers) {
+          const cleanNumbers = possibleNumbers.filter(n => !(dimMatch && (n === dimMatch[1] || n === dimMatch[2] || n === dimMatch[3])));
+          if (cleanNumbers.length > 0) parsedQuantity = cleanNumbers[cleanNumbers.length - 1];
+       }
+    }
+  }
+
+  const reqType = data.flowType === 'devis' ? 'Devis' : (data.flowType === 'inconnu' ? 'Conseil' : 'Pièce');
+
+  let text = `— DEMANDE CLIENT SNIMOP —\n\n`;
+  text += `Type : ${reqType}\n`;
+  text += `Produit : ${productName}\n\n`;
+  
+  if (parsedDimensions || data.reference) {
+     if (data.reference && !parsedDimensions) text += `Référence : ${data.reference}\n`;
+     if (parsedDimensions) text += `Dimensions : ${parsedDimensions}\n`;
+  } else if (!data.tags.includes("COURROIE") && !data.tags.includes("ROULEMENT")) {
+     text += `Informations : ${fullText || "Non renseignées"}\n`;
+  }
+  
+  if (data.tags.includes("COURROIE")) {
+     text += `Longueur : ${parsedLength || "Non renseignée"}\n`;
+  }
+  
+  text += `Quantité : ${parsedQuantity || "Non renseignée"}\n\n`;
   text += `Application : ${data.application || "Non renseigné"}\n`;
   text += `Photo : ${data.hasPhoto ? "Oui" : "Non"}\n\n`;
 
-  text += `--- COORDONNÉES ---\n`;
+  text += `— COORDONNÉES —\n`;
   text += `Nom : ${data.contactName || "Non renseigné"}\n`;
   text += `Société : ${data.contactCompany || "Non renseignée"}\n`;
   text += `Téléphone : ${data.contactPhone || "Non renseigné"}\n`;
