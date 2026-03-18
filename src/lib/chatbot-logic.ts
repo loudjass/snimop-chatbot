@@ -26,6 +26,7 @@ export interface ChatbotData {
   contactName?: string;
   contactEmail?: string;
   contactPhone?: string;
+  contactCompany?: string;
   tags: RequestTag[];
   aiAnalysis?: string;
   completionScore?: number;
@@ -82,36 +83,44 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
   // Since we don't have strict entity extraction yet, we'll join the non-command messages 
   // and dump them into a generic "Détails" section, while keeping the requested template structure.
   
-  const cleanMessages = userMessages.filter(m => 
+   const cleanMessages = userMessages.filter(m => 
     !m.includes("Je n'ai pas toutes les informations") && 
-    !m.includes("Envoyer quand même ma demande") &&
+    !m.includes("Envoyer quand même") &&
     !m.includes("Identifier") && 
     !m.includes("Recherche") &&
     !m.includes("Demande de devis") &&
-    !m.includes("[Photo")
+    !m.includes("[Photo") &&
+    !m.includes("Comparaison") &&
+    !m.includes(data.contactPhone || "___NO_PHONE___") &&
+    !m.includes(data.contactName || "___NO_NAME___")
   );
 
   let detailsText = cleanMessages.join(" | ");
 
-  let productName = estimatedType || "[Non spécifié]";
+  let productName = estimatedType || "Non spécifié";
   if (data.tags.includes("COURROIE")) productName = "Courroie";
   else if (data.tags.includes("ROULEMENT")) productName = "Roulement";
-  else if (data.flowType === "devis") productName = "Demande de devis";
+  else if (data.flowType === "devis") productName = "Devis d'intervention";
+  else if (data.flowType === "piece" && data.productType) productName = data.productType;
   
-  let formattedDetails = detailsText || "[Non spécifié]";
+  let formattedDetails = detailsText || "Non spécifiées";
 
+  // Using the exact format from requirements
   let text = `--- DEMANDE CLIENT SNIMOP ---\n\n`;
+  text += `Type de demande : ${data.flowType === 'devis' ? 'Devis' : (data.flowType === 'inconnu' ? 'Conseil' : 'Pièce')}\n`;
   text += `Produit : ${productName}\n`;
-  text += `Désignation : ${probableMatch ? probableMatch : (data.flowType === 'devis' ? "Devis d'intervention" : formattedDetails)}\n`;
-  text += `Dimensions : ${detailsText ? detailsText : "[Non fournies]"}\n`;
-  text += `Quantité : [Si fournie]\n`;
-  text += `Application : [Si fournie]\n\n`;
+  text += `Désignation probable : ${probableMatch ? probableMatch : (data.flowType === 'devis' ? "Voir description" : "Non renseignée")}\n`;
+  text += `Référence fournie : ${data.reference || "Non renseignée"}\n`;
+  text += `Dimensions : ${formattedDetails}\n`;
+  text += `Longueur : ${data.tags.includes("COURROIE") ? "A confirmer (" + formattedDetails + ")" : "N/A"}\n`;
+  text += `Quantité : ${data.quantity || "Non renseignée"}\n`;
+  text += `Application / usage : ${data.application || "Non renseigné"}\n`;
+  text += `Photo : ${data.hasPhoto ? "Oui" : "Non"}\n\n`;
 
   text += `--- COORDONNÉES ---\n\n`;
-  text += `Nom : \n`;
-  text += `Société : \n`;
-  text += `Téléphone : \n\n`;
-  text += `Photo : ${data.hasPhoto ? "Oui" : "Non"}`;
+  text += `Nom : ${data.contactName || "Non renseigné"}\n`;
+  text += `Société : ${data.contactCompany || "Non renseignée"}\n`;
+  text += `Téléphone : ${data.contactPhone || "Non renseigné"}\n`;
   
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 };
@@ -148,8 +157,8 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   let needsCascade = false;
   let detectedType = "Courroie";
 
-  // Dimensions : largeur x hauteur
-  const dimRegex = /(\d+)[xX*](\d+)/;
+  // Dimensions : largeur x hauteur (Exclusion formelle des 3 dimensions pour éviter les roulements)
+  const dimRegex = /(?<!\dx)\b(\d+)[xX*](\d+)\b(?![xX*]\d)/;
   const matchDim = normInput.match(dimRegex);
 
   let probableProfile = "";
@@ -169,7 +178,7 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     }
     
     if (probableProfile) {
-       message = `La dimension ${width}x${height} correspond au profil probable d'une courroie de type ${probableProfile}.`;
+       message = `La dimension ${width}x${height} correspond au profil probable de votre courroie (profil ${probableProfile}).`;
     } else {
        message = `Les dimensions ${width}x${height} correspondent probablement à une section spécifique de courroie.`;
     }
@@ -196,7 +205,7 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
 
   if (message) {
     needsCascade = true;
-    message += "\n\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement préciser Li, Le ou Ld si connu) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.";
+    message += "\nPour éviter toute erreur, merci de nous préciser la longueur (idéalement Li, Le ou Ld si connue) ou la référence complète.\nVous pouvez aussi nous envoyer une photo.";
     return { matches: true, message, tags, needsCascade, detectedType };
   }
   
@@ -241,19 +250,19 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
   }
 
   if (likelyType) {
-    message = `Cela correspond probablement à un roulement type ${likelyType}.`;
+    message = `Les dimensions ${input} correspondent probablement à un roulement type ${likelyType}.`;
   }
 
   // Suffixes (2RS, ZZ, C3)
   if (normInput.includes('2rs')) {
-    message += (message ? " " : "") + "(version étanche 2RS probable).";
+    message += (message ? " " : "Cela correspond probablement à un ") + "roulement version étanche 2RS.";
   } else if (normInput.includes('zz')) {
-    message += (message ? " " : "") + "(version avec flasques ZZ probable).";
+    message += (message ? " " : "Cela correspond probablement à un ") + "roulement version avec flasques ZZ.";
   }
 
   if (message) {
     needsCascade = true;
-    message += "\n\nPour éviter toute erreur, merci de nous confirmer s'il s'agit d'un modèle ouvert, 2RS ou ZZ, ainsi que la quantité souhaitée.\nVous pouvez aussi nous envoyer une photo.";
+    message += "\n\nPouvez-vous nous confirmer le type :\n- ouvert\n- 2RS (étanche)\n- ZZ (flasques métal)\n\nQuelle quantité souhaitez-vous ?";
     return { matches: true, message, tags, needsCascade, detectedType };
   }
   
@@ -321,46 +330,69 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
 };
 
 export const compareBelt = (profile: string, lengthType: string, value: number): {  message: string, equivalent: string } => {
-  // Conversions basiques de courroies
-  // SPA -> Ld = Li + 45 / Le = Li + 63
-  // SPB -> Ld = Li + 60 / Le = Li + 82
-  // SPZ -> Ld = Li + 37 / Le = Li + 51
-  // A -> Ld = Li + 30 / Le = Li + 50
-  // B -> Ld = Li + 43 / Le = Li + 69
-
   let baseLi = value;
   
-  // Normalize to Li conceptually for internal match if they passed Ld or Le
-  if (profile === "SPA") {
+  // Normalize given value to internal Li based on profile mapping
+  if (profile === "SPA" || profile === "XPA") {
     if (lengthType === "Ld") baseLi = value - 45;
     if (lengthType === "Le") baseLi = value - 63;
-  } else if (profile === "SPB") {
+  } else if (profile === "SPB" || profile === "XPB") {
     if (lengthType === "Ld") baseLi = value - 60;
     if (lengthType === "Le") baseLi = value - 82;
-  } else if (profile === "SPZ") {
+  } else if (profile === "SPC" || profile === "XPC") {
+    if (lengthType === "Ld") baseLi = value - 83;
+    if (lengthType === "Le") baseLi = value - 113;
+  } else if (profile === "SPZ" || profile === "XPZ") {
     if (lengthType === "Ld") baseLi = value - 37;
     if (lengthType === "Le") baseLi = value - 51;
-  } else if (profile === "A") {
+  } else if (profile === "A" || profile === "4L") {
     if (lengthType === "Ld") baseLi = value - 30;
     if (lengthType === "Le") baseLi = value - 50;
-  } else if (profile === "B") {
+  } else if (profile === "B" || profile === "5L") {
     if (lengthType === "Ld") baseLi = value - 43;
     if (lengthType === "Le") baseLi = value - 69;
+  } else if (profile === "C") {
+    if (lengthType === "Ld") baseLi = value - 58;
+    if (lengthType === "Le") baseLi = value - 88;
+  } else if (profile === "Z" || profile === "3L") {
+    if (lengthType === "Ld") baseLi = value - 22;
+    if (lengthType === "Le") baseLi = value - 38;
   }
 
-  // Create formatting back for probable matching
-  let probableLw = baseLi; // Ld / Lw
-  if (profile === "SPA") probableLw = baseLi + 45;
-  if (profile === "SPB") probableLw = baseLi + 60;
-  if (profile === "SPZ") probableLw = baseLi + 37;
-  if (profile === "A") probableLw = baseLi + 30;
-  if (profile === "B") probableLw = baseLi + 43;
+  // Cross Equivalent logics base recommendations
+  let famProfile = "";
+  if (profile === "3L") famProfile = "Z probable";
+  if (profile === "4L") famProfile = "A probable";
+  if (profile === "5L") famProfile = "B probable";
+  if (profile === "XPZ") famProfile = "SPZ / AVX10 selon contexte";
+  if (profile === "XPA") famProfile = "SPA / AVX13 probable";
+  if (profile === "XPB") famProfile = "SPB / AVX17 probable";
+  if (profile === "XPC") famProfile = "SPC probable";
 
-  const resultStr = `${profile} ${Math.round(probableLw)} Ld (primitive)`;
-  const equivalent = resultStr;
+  if (!famProfile) {
+     if (profile === "Z") famProfile = "3L selon utilisation";
+     if (profile === "A") famProfile = "4L selon utilisation";
+     if (profile === "B") famProfile = "5L selon utilisation";
+     if (profile === "SPZ") famProfile = "XPZ selon diamètres poulies";
+     if (profile === "SPA") famProfile = "XPA (crantée) selon encombrement";
+  }
+
+  // Formatting equivalent based on common Ld/Le usage in the industry for that profile
+  let targetLw = baseLi; 
+  let targetSuffix = "Li";
+
+  if (["SPA", "SPB", "SPC", "SPZ", "XPA", "XPB", "XPC", "XPZ"].includes(profile)) {
+    targetSuffix = "Ld";
+    if (profile.includes("A")) targetLw = baseLi + 45;
+    if (profile.includes("B")) targetLw = baseLi + 60;
+    if (profile.includes("C")) targetLw = baseLi + 83;
+    if (profile.includes("Z")) targetLw = baseLi + 37;
+  }
+
+  const equivalent = `${profile} ${Math.round(targetLw)} ${targetSuffix}`;
 
   return {
     equivalent,
-    message: `Selon les données standards, cela équivaut probablement à une courroie **${equivalent}**.\n\n⚠️ *Équivalence à confirmer selon la marque, la norme et votre application.*`
+    message: `Selon les correspondances standards, ${profile} ${value} ${lengthType} correspond probablement à une courroie de même famille.\n\nÉquivalent probable : **${equivalent}**\nFamille proche : **${famProfile}**\n\n⚠️ *Équivalence à confirmer selon la marque, la norme et l'application.*`
   };
 };

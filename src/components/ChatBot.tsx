@@ -164,6 +164,42 @@ export default function ChatBot() {
   const advanceFlow = (input: string) => {
     const current = step;
 
+    // Contact info extraction (used when waiting for coords)
+    const extractContacts = (text: string) => {
+      let extracted = { name: "", phone: "", company: "" };
+      const lines = text.split('\n');
+      
+      // Smart extraction if single line
+      if (lines.length === 1) {
+         // Phone extraction
+         const phoneMatch = text.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
+         if (phoneMatch) extracted.phone = phoneMatch[0];
+         
+         const withoutPhone = text.replace(extracted.phone, "").trim();
+         const words = withoutPhone.split(" ").filter(w => w.length > 0);
+         
+         // Assuming last word is company or if it's all caps like SNIMOP
+         if (words.length > 0) {
+            const potentialCompanyIndex = words.findIndex(w => w === w.toUpperCase() && w.length > 2);
+            if (potentialCompanyIndex !== -1) {
+               extracted.company = words[potentialCompanyIndex];
+               words.splice(potentialCompanyIndex, 1);
+            } else {
+               extracted.company = words.pop() || "";
+            }
+            extracted.name = words.join(" ");
+         }
+      } else {
+         // Very basic multi-line fallback matching exact prompt layout
+         lines.forEach(l => {
+            if (l.toLowerCase().includes("nom")) extracted.name = l.split(":")[1]?.trim() || "";
+            if (l.toLowerCase().includes("société") || l.toLowerCase().includes("societe")) extracted.company = l.split(":")[1]?.trim() || "";
+            if (l.toLowerCase().includes("tel") || l.toLowerCase().includes("téléphone")) extracted.phone = l.split(":")[1]?.trim() || "";
+         });
+      }
+      return extracted;
+    };
+
     setTimeout(() => {
       // Priority Check: Cascade follow-up logic
       if (cascadePending) {
@@ -173,7 +209,7 @@ export default function ChatBot() {
         } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
            addMessage("bot", "C'est noté. Si vous n'avez pas toutes les données, l'équipe regardera avec ces éléments.");
         } else {
-           addMessage("bot", "C'est noté pour cette précision technique.");
+           addMessage("bot", `Très bien, ${input.length < 20 ? input : "merci pour cette précision"}, c'est noté.`);
         }
         
         setTimeout(() => {
@@ -215,7 +251,14 @@ export default function ChatBot() {
           }
         } else if (current === 2) {
            addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
-        } else {
+        } else if (current === 3) {
+           const contacts = extractContacts(input);
+           if (!contacts.phone) {
+             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
+             setStep(current - 1);
+             return;
+           }
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            finalizeRequest();
         }
       } 
@@ -242,8 +285,15 @@ export default function ChatBot() {
           }
         } else if (current === 2) {
           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
-        } else {
-          finalizeRequest();
+        } else if (current === 3) {
+           const contacts = extractContacts(input);
+           if (!contacts.phone) {
+             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
+             setStep(current - 1);
+             return;
+           }
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
+           finalizeRequest();
         }
       }
 
@@ -253,8 +303,15 @@ export default function ChatBot() {
           addTag("URGENT");
         } else if (current === 2) {
           addMessage("bot", "C'est noté. Afin d'éditer un devis et de vous recontacter avec une proposition propre, merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
-        } else {
-          finalizeRequest();
+        } else if (current === 3) {
+           const contacts = extractContacts(input);
+           if (!contacts.phone) {
+             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
+             setStep(current - 1);
+             return;
+           }
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
+           finalizeRequest();
         }
       }
 
@@ -287,8 +344,15 @@ export default function ChatBot() {
           }
         } else if (current === 2) {
           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
-        } else {
-          finalizeRequest();
+        } else if (current === 3) {
+           const contacts = extractContacts(input);
+           if (!contacts.phone) {
+             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
+             setStep(current - 1);
+             return;
+           }
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
+           finalizeRequest();
         }
       }
       
