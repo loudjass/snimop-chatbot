@@ -2,9 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap } from "lucide-react";
+import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap, UserCheck, HardHat } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { analyzeBelt, analyzeBearing, analyzeGeneral, compareBelt, compareBeltReverse, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
+import { analyzeBelt, analyzeBearing, analyzeGeneral, analyzeSymptoms, compareBelt, compareBeltReverse, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
 
 export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece" | "compare";
 
@@ -24,6 +24,9 @@ export default function ChatBot() {
     tags: []
   });
   
+  // Accumulated context across all user turns
+  const [accumulatedContext, setAccumulatedContext] = useState<string>("");
+  
   // Belt Comparator State
   const [compMode, setCompMode] = useState<"classic"|"reverse">("classic");
   const [compProfile, setCompProfile] = useState("SPA");
@@ -37,18 +40,19 @@ export default function ChatBot() {
   const initialMessage: Message = {
     id: "initial",
     sender: "bot",
-    text: "Bonjour ! Je suis l'assistant virtuel de SNIMOP. Comment puis-je vous aider aujourd'hui ?",
+    text: "Bonjour ! Je suis l'assistant technique de SNIMOP. Comment puis-je vous aider aujourd'hui ?",
     options: [
       { id: "courroie", label: "Identifier ma courroie", action: () => startFlow("courroie"), icon: <CircleDashed size={16} /> },
       { id: "compare", label: "Comparer / convertir ma courroie", action: () => startFlow("compare"), icon: <Settings size={16} /> },
       { id: "roulement", label: "Identifier mon roulement", action: () => startFlow("roulement"), icon: <Settings size={16} /> },
-      { id: "inconnu", label: "Je ne connais pas la référence", action: () => startFlow("inconnu"), icon: <Search size={16} /> },
+      { id: "inconnu", label: "Je ne sais pas ce que c'est", action: () => startFlow("inconnu"), icon: <Search size={16} /> },
       { id: "devis", label: "Demande de devis intervention", action: () => startFlow("devis"), icon: <FileText size={16} /> },
-      { id: "piece", label: "Recherche de pièce", action: () => startFlow("piece"), icon: <Wrench size={16} /> },
+      { id: "piece", label: "Recherche de pièce technique", action: () => startFlow("piece"), icon: <Wrench size={16} /> },
     ]
   };
 
   const [cascadePending, setCascadePending] = useState(false);
+  const [awaitingField, setAwaitingField] = useState<"phone" | "email" | null>(null);
 
   const [messages, setMessages] = useState<Message[]>([initialMessage]);
   const messagesRef = useRef(messages);
@@ -82,6 +86,8 @@ export default function ChatBot() {
     setCurrentFlow(flowId);
     setStep(1);
     setCascadePending(false);
+    setAwaitingField(null);
+    setAccumulatedContext("");
     
     setRequestData({ flowType: flowId, tags: [] });
 
@@ -97,15 +103,17 @@ export default function ChatBot() {
         nextText = "Très bien. Pouvez-vous me donner les dimensions de votre courroie (largeur, hauteur, longueur) ou sa référence si vous la connaissez ?";
       } else if (flowId === "roulement") {
         addTag("ROULEMENT");
-        nextText = "Parfait. Connaissez-vous les dimensions du roulement (diamètre interne x externe x épaisseur) ou avez-vous une référence inscrite dessus ?";
+        nextText = "Parfait. Connaissez-vous les dimensions du roulement (diamètre interne × externe × épaisseur) ou avez-vous une référence inscrite dessus ?";
       } else if (flowId === "inconnu") {
         addTag("HORS_STANDARD");
-        nextText = "Pas de problème. Guider nos clients est notre métier. Pouvez-vous me décrire la pièce ou son utilité ? Vous pouvez aussi envoyer une photo si besoin.";
+        nextText = "Pas de problème, guider nos clients est notre métier.\n\nPouvez-vous me décrire la pièce ou son utilité ? Est-ce qu'elle tourne ? Y a-t-il un bruit ou un échauffement ?";
       } else if (flowId === "devis") {
         addTag("DEVIS");
-        nextText = "Oui, nous pouvons intervenir. Dans la plupart des cas, un diagnostic est nécessaire pour identifier précisément la panne. Quel est le type d’équipement et le problème rencontré ?";
+        addTag("ALEXANDRE");
+        nextText = "Bien sûr, nous pouvons intervenir.\n\nPour commencer : quel est le type d'équipement concerné ? (porte, rideau, volet, machine, compresseur...)";
       } else if (flowId === "piece") {
         addTag("PIECE");
+        addTag("PASCALE");
         nextText = "Entendu. Quel est le type de produit, la marque ou la référence que vous recherchez ?";
       }
       
@@ -117,6 +125,8 @@ export default function ChatBot() {
     setCurrentFlow("home");
     setStep(0);
     setCascadePending(false);
+    setAwaitingField(null);
+    setAccumulatedContext("");
     setMessages([
       {
         id: Date.now().toString(),
@@ -147,16 +157,72 @@ export default function ChatBot() {
     advanceFlow("[FORCE_SEND]");
   };
 
-  const finalizeRequest = () => {
+  // ==========================================
+  // CONTACT EXTRACTION — v3 smart parser
+  // ==========================================
+  const extractContacts = (text: string): { name: string; phone: string; company: string; email: string } => {
+    let extracted = { name: "", phone: "", company: "", email: "" };
+
+    // Email
+    const emailMatch = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+    if (emailMatch) extracted.email = emailMatch[0];
+
+    // Phone (French)
+    const phoneMatch = text.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
+    if (phoneMatch) extracted.phone = phoneMatch[0];
+
+    const withoutContactData = text.replace(extracted.email, "").replace(extracted.phone, "").trim();
+    const lines = withoutContactData.split('\n');
+
+    if (lines.length > 1) {
+       lines.forEach(l => {
+          const lLow = l.toLowerCase();
+          if (lLow.includes("nom") || lLow.includes("prénom") || lLow.includes("prenom")) extracted.name = l.split(":")[1]?.trim() || "";
+          if (lLow.includes("société") || lLow.includes("societe") || lLow.includes("entreprise")) extracted.company = l.split(":")[1]?.trim() || "";
+          if (lLow.includes("tel") || lLow.includes("téléphone")) extracted.phone = l.split(":")[1]?.trim() || extracted.phone;
+          if (lLow.includes("mail") || lLow.includes("email")) extracted.email = l.split(":")[1]?.trim() || extracted.email;
+       });
+    } else {
+       // Single line: extract company (ALL CAPS word) and name (rest)
+       const words = withoutContactData.split(" ").filter(w => w.length > 0);
+       const potentialCompanyIndex = words.findIndex(w => w === w.toUpperCase() && w.length > 2 && /^[A-Z]/.test(w));
+       if (potentialCompanyIndex !== -1) {
+          extracted.company = words[potentialCompanyIndex];
+          words.splice(potentialCompanyIndex, 1);
+       } else if (words.length > 2) {
+          extracted.company = words.pop() || "";
+       }
+       extracted.name = words.join(" ");
+    }
+
+    return extracted;
+  };
+
+  // ==========================================
+  // ORIENTATION LABEL
+  // ==========================================
+  const getOrientationMessage = (data: ChatbotData): string => {
+    if (data.flowType === "devis" || data.tags.includes("ALEXANDRE")) {
+      return "\n\n→ Votre demande sera traitée par **Alexandre** (équipe terrain / interventions).";
+    }
+    return "\n\n→ Votre demande sera traitée par **Pascale** (technique / fournitures).";
+  };
+
+  // ==========================================
+  // FINALIZE REQUEST
+  // ==========================================
+  const finalizeRequest = (extraData?: Partial<ChatbotData>) => {
     setTimeout(() => {
       const uMsgs = messagesRef.current.filter(m => m.sender === "user" && m.id !== "initial").map(m => m.text);
+      const mergedData = { ...requestData, ...extraData };
       const finalData = {
-         ...requestData,
-         completionScore: calculateCompletionScore(requestData, uMsgs),
-         whatsAppUrl: generateWhatsAppLink(requestData, uMsgs)
+         ...mergedData,
+         completionScore: calculateCompletionScore(mergedData, uMsgs),
+         whatsAppUrl: generateWhatsAppLink(mergedData, uMsgs)
       };
 
-      addMessage("bot", "Parfait, votre demande est prête.\nNous pouvons vous envoyer une solution rapidement.\n\nVous pouvez l’envoyer directement via WhatsApp ci-dessous.", [
+      const orientMsg = getOrientationMessage(finalData);
+      addMessage("bot", `Parfait, votre demande est prête.${orientMsg}\n\nVous pouvez l'envoyer directement via WhatsApp ci-dessous.`, [
         { id: "whatsapp", label: "Envoyer ma demande par WhatsApp", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> }
       ]);
       
@@ -164,66 +230,60 @@ export default function ChatBot() {
     }, 800);
   };
 
+  // ==========================================
+  // ADVANCE FLOW — v3 multi-turn logic
+  // ==========================================
   const advanceFlow = (input: string) => {
     const current = step;
 
-    // Contact info extraction (used when waiting for coords)
-    const extractContacts = (text: string) => {
-      let extracted = { name: "", phone: "", company: "" };
-      const lines = text.split('\n');
-      
-      // Smart extraction if single line
-      if (lines.length === 1) {
-         // Phone extraction
-         const phoneMatch = text.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
-         if (phoneMatch) extracted.phone = phoneMatch[0];
-         
-         const withoutPhone = text.replace(extracted.phone, "").trim();
-         const words = withoutPhone.split(" ").filter(w => w.length > 0);
-         
-         // Assuming last word is company or if it's all caps like SNIMOP
-         if (words.length > 0) {
-            const potentialCompanyIndex = words.findIndex(w => w === w.toUpperCase() && w.length > 2);
-            if (potentialCompanyIndex !== -1) {
-               extracted.company = words[potentialCompanyIndex];
-               words.splice(potentialCompanyIndex, 1);
-            } else {
-               extracted.company = words.pop() || "";
-            }
-            extracted.name = words.join(" ");
-         }
-      } else {
-         // Very basic multi-line fallback matching exact prompt layout
-         lines.forEach(l => {
-            if (l.toLowerCase().includes("nom")) extracted.name = l.split(":")[1]?.trim() || "";
-            if (l.toLowerCase().includes("société") || l.toLowerCase().includes("societe")) extracted.company = l.split(":")[1]?.trim() || "";
-            if (l.toLowerCase().includes("tel") || l.toLowerCase().includes("téléphone")) extracted.phone = l.split(":")[1]?.trim() || "";
-         });
-      }
-      return extracted;
-    };
+    // Accumulate context
+    if (input !== "[FAST_MODE]" && input !== "[FORCE_SEND]" && !input.startsWith("[Photo")) {
+      setAccumulatedContext(prev => prev + " " + input);
+    }
 
     setTimeout(() => {
-      // Priority Check: Cascade follow-up logic
+
+      // ---- AWAITING SPECIFIC FIELD ----
+      if (awaitingField === "phone") {
+        const phoneMatch = input.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
+        if (!phoneMatch) {
+          addMessage("bot", "Je n'arrive pas à identifier un numéro de téléphone valide. Pouvez-vous le saisir de nouveau ? (ex: 06 12 34 56 78)");
+          return;
+        }
+        setRequestData(prev => ({ ...prev, contactPhone: phoneMatch[0] }));
+        setAwaitingField("email");
+        addMessage("bot", "Merci. Et votre adresse e-mail pour que nous puissions vous envoyer le devis ?");
+        return;
+      }
+
+      if (awaitingField === "email") {
+        const emailMatch = input.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+        const hasEmail = !!emailMatch;
+        setRequestData(prev => ({ ...prev, contactEmail: hasEmail ? emailMatch![0] : undefined }));
+        finalizeRequest({ contactEmail: hasEmail ? emailMatch![0] : undefined });
+        setAwaitingField(null);
+        return;
+      }
+
+      // ---- CASCADE FOLLOW-UP ----
       if (cascadePending) {
         setCascadePending(false);
         if (input === "[FAST_MODE]" || input === "[FORCE_SEND]") {
-           addMessage("bot", "Ces informations sont importantes pour garantir la compatibilité. Nous allons tout de même l'ajouter à votre dossier.");
+           addMessage("bot", "C'est noté. Votre demande sera transmise avec les éléments déjà disponibles.");
         } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
-           addMessage("bot", "C'est noté. Si vous n'avez pas toutes les données, l'équipe regardera avec ces éléments.");
+           addMessage("bot", "C'est noté. Si vous n'avez pas toutes les données, notre équipe reviendra vers vous.");
         } else {
-           addMessage("bot", `Très bien, ${input.length < 20 ? input : "merci pour cette précision"}, c'est noté.`);
+           addMessage("bot", `Bien noté — ${input.length < 20 ? `"${input}"` : "merci pour cette précision"}.`);
         }
         
         setTimeout(() => {
-          if (currentFlow === "courroie") {
-             addMessage("bot", "Quelle quantité vous faut-il et à quoi sert cette courroie (application) ?");
-          } else if (currentFlow === "roulement") {
-             addMessage("bot", "Quelle est l'application ou la machine de destination ?");
-          } else if (currentFlow === "inconnu" || currentFlow === "piece") {
-             addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions techniques ?");
+          // For technical flows, ask for quantity/application then coords
+          if (currentFlow === "courroie" || currentFlow === "roulement" || currentFlow === "inconnu" || currentFlow === "piece") {
+             addMessage("bot", "Quelle quantité vous faut-il et sur quelle machine ou équipement est-elle montée ?");
+             setStep(current + 1);
           } else {
-             addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+             // devis — fall through to coord collection
+             addMessage("bot", "Merci pour ces précisions.\n\nPour finaliser votre demande, pourriez-vous indiquer votre nom, société et numéro de téléphone ?");
              setStep(current + 1);
           }
         }, 800);
@@ -232,12 +292,15 @@ export default function ChatBot() {
 
       setStep(current + 1);
 
+      // ==========================================
+      // COURROIE FLOW
+      // ==========================================
       if (currentFlow === "courroie") {
         if (current === 1) {
           const analysis = analyzeBelt(input);
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
-            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message }));
+            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, orientation: "PASCALE" }));
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
@@ -246,32 +309,39 @@ export default function ChatBot() {
                ]);
             } else {
                addMessage("bot", analysis.message);
-               setTimeout(() => addMessage("bot", "Quelle quantité vous faut-il et à quoi sert cette courroie (application) ?"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité vous faut-il et sur quelle machine est-elle montée ?"), 800);
             }
           } else {
-            addMessage("bot", "Je n'ai pas pu identifier formellement la courroie avec ces dimensions. L'équipe technique l'analysera.");
-            setTimeout(() => addMessage("bot", "Quelle quantité vous faut-il et à quoi sert cette courroie (application) ?"), 800);
+            addMessage("bot", "Je n'ai pas pu identifier la courroie avec ces éléments. Notre équipe technique analysera les données.\n\nQuelle quantité vous faut-il et sur quelle machine est-elle montée ?");
           }
         } else if (current === 2) {
-           addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+           setRequestData(prev => ({ ...prev, application: input }));
+           addMessage("bot", "Presque terminé !\n\nMerci d'indiquer votre nom, société et numéro de téléphone :");
         } else if (current === 3) {
            const contacts = extractContacts(input);
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
-             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
-             setStep(current - 1);
+             setAwaitingField("phone");
+             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
              return;
            }
-           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
-           finalizeRequest();
+           setAwaitingField("email");
+           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi de demande ?");
         }
       } 
       
+      // ==========================================
+      // ROULEMENT FLOW
+      // ==========================================
       else if (currentFlow === "roulement") {
         if (current === 1) {
-          const analysis = analyzeBearing(input);
+          const fullCtx = accumulatedContext + " " + input;
+          let analysis = analyzeBearing(fullCtx);
+          if (!analysis.matches) analysis = analyzeBearing(input);
+
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
-            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message }));
+            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, orientation: "PASCALE" }));
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
@@ -283,54 +353,86 @@ export default function ChatBot() {
                setTimeout(() => addMessage("bot", "Quelle est l'application ou la machine de destination ?"), 800);
             }
           } else {
-            addMessage("bot", "C'est noté. Notre équipe cherchera la correspondance exacte.");
-            setTimeout(() => addMessage("bot", "Quelle est l'application ou la machine de destination ?"), 800);
+            addMessage("bot", "C'est noté. Notre équipe cherchera la correspondance exacte.\n\nQuelle est la machine ou l'application de destination ?");
           }
         } else if (current === 2) {
-          addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+          setRequestData(prev => ({ ...prev, application: input }));
+          addMessage("bot", "Merci.\n\nPour finaliser, merci d'indiquer votre nom, société et numéro de téléphone :");
         } else if (current === 3) {
            const contacts = extractContacts(input);
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
-             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
-             setStep(current - 1);
+             setAwaitingField("phone");
+             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
              return;
            }
-           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
-           finalizeRequest();
+           setAwaitingField("email");
+           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi ?");
         }
       }
 
+      // ==========================================
+      // DEVIS / INTERVENTION FLOW — 4 turns
+      // ==========================================
       else if (currentFlow === "devis") {
         if (current === 1) {
-          addMessage("bot", "Oui, nous pouvons intervenir.\nPour vous proposer un devis précis, j'ai besoin de :\n- type d'équipement\n- problème rencontré\n- localisation du site\n- niveau d'urgence.\n\nVous pouvez aussi envoyer une photo.");
-          addTag("URGENT");
+          // Turn 1: Equipment type
+          setRequestData(prev => ({ ...prev, equipmentType: input, orientation: "ALEXANDRE" }));
+          addTag("ALEXANDRE");
+
+          // Detect urgency keywords
+          const isUrgent = /urgent|arrêt|bloqué|bloquée|sécurité|production|immédiat/i.test(input);
+          if (isUrgent) {
+            addTag("URGENT");
+          }
+
+          addMessage("bot", `Bien noté — **${input}**.\n\nPouvez-vous me décrire le problème rencontré et les symptômes observés ? (bruit, blocage, panne électrique, déformation...)`);
         } else if (current === 2) {
-          addMessage("bot", "C'est noté. Afin d'éditer un devis et de vous recontacter avec une proposition propre, merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+          // Turn 2: Problem + symptoms
+          setRequestData(prev => ({ ...prev, issueDescription: input, symptoms: input }));
+
+          // Detect urgency in symptoms too
+          const isUrgent = /urgent|arrêt|bloqué|bloquée|sécurité|production|immédiat/i.test(input);
+          if (isUrgent) addTag("URGENT");
+
+          addMessage("bot", "Compris. Quelle est la localisation du site et quel est le niveau d'urgence ?\n_(ex: Paris 19e — urgence normale / demi-journée / intervention immédiate)_");
         } else if (current === 3) {
-           const contacts = extractContacts(input);
-           if (!contacts.phone) {
-             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
-             setStep(current - 1);
-             return;
-           }
-           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
-           finalizeRequest();
+          // Turn 3: Location + urgency
+          const urgencyKeywords = /immédiat|urgent|critique|bloqué|production arrêtée/i;
+          const isUrgent = urgencyKeywords.test(input);
+          if (isUrgent) addTag("URGENT");
+          setRequestData(prev => ({ ...prev, location: input, urgency: input }));
+
+          addMessage("bot", "Parfait. Pour que notre équipe puisse vous recontacter avec une proposition :\n\nMerci d'indiquer votre nom, société et numéro de téléphone :");
+        } else if (current === 4) {
+          // Turn 4: Contact collection
+          const contacts = extractContacts(input);
+          setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
+          if (!contacts.phone) {
+            setAwaitingField("phone");
+            addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
+            return;
+          }
+          setAwaitingField("email");
+          addMessage("bot", "Mémorisé. Et votre adresse e-mail pour recevoir la confirmation de devis ?");
         }
       }
 
+      // ==========================================
+      // INCONNU / PIECE FLOW — smart guided questions
+      // ==========================================
       else if (currentFlow === "inconnu" || currentFlow === "piece") {
         if (current === 1) {
-          let analysis = analyzeBelt(input);
-          if (!analysis.matches) {
-            analysis = analyzeBearing(input);
-            if (!analysis.matches) {
-              analysis = analyzeGeneral(input);
-            }
-          }
+          const fullCtx = input;
+
+          // Try belt first
+          let analysis = analyzeBelt(fullCtx);
+          if (!analysis.matches) analysis = analyzeBearing(fullCtx);
+          if (!analysis.matches) analysis = analyzeGeneral(fullCtx);
 
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
-            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, productType: analysis.detectedType }));
+            setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, productType: analysis.detectedType, orientation: "PASCALE" }));
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
@@ -342,20 +444,68 @@ export default function ChatBot() {
                setTimeout(() => addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions techniques ?"), 800);
             }
           } else {
-             addMessage("bot", "Pour éviter toute erreur, pouvez-vous nous préciser l'utilisation ou nous fournir une photo de la pièce ?");
-             setCascadePending(true);
+            // No match — use symptom engine to guide
+            const symptomsResult = analyzeSymptoms(fullCtx);
+            if (symptomsResult.hypothesis) {
+              addMessage("bot", `1. 🔍 Diagnostic\n${symptomsResult.hypothesis}\n\n2. 🛠 Solution\nJe vais vous guider avec quelques questions pour confirmer et préparer votre demande.\n\n3. 📦 Proposition\nDès confirmation, nous pourrons trouver la pièce ou l'intervention adaptée.\n\n4. ❓ Question utile\n${symptomsResult.nextQuestion}`);
+              setCascadePending(true);
+
+              // Tag based on suggested type
+              if (symptomsResult.suggestedType) addTag(symptomsResult.suggestedType);
+              if (symptomsResult.suggestedType === "DEVIS") {
+                addTag("ALEXANDRE");
+                setRequestData(prev => ({ ...prev, orientation: "ALEXANDRE" }));
+              } else {
+                addTag("PASCALE");
+                setRequestData(prev => ({ ...prev, orientation: "PASCALE" }));
+              }
+            } else {
+              addMessage("bot", "Pour vous aider efficacement, j'ai besoin de quelques précisions.\n\n- Est-ce que la pièce **tourne** ?\n- Y a-t-il un **bruit** ou un **échauffement** ?\n- S'agit-il d'une porte, d'une machine ou d'un autre équipement ?\n\nVous pouvez aussi **envoyer une photo** si c'est plus simple.");
+              setCascadePending(true);
+            }
           }
         } else if (current === 2) {
-          addMessage("bot", "Merci de compléter vos coordonnées :\nNom :\nSociété :\nTéléphone :");
+          // Turn 2: cross-symptom analysis with full accumulated context
+          const fullCtx = accumulatedContext + " " + input;
+          let analysis2 = analyzeBelt(fullCtx);
+          if (!analysis2.matches) analysis2 = analyzeBearing(fullCtx);
+          if (!analysis2.matches) analysis2 = analyzeGeneral(fullCtx);
+
+          if (analysis2.matches) {
+            analysis2.tags.forEach(addTag);
+            setRequestData(prev => ({ ...prev, aiAnalysis: analysis2.message, productType: analysis2.detectedType }));
+            if (analysis2.needsCascade) {
+               setCascadePending(true);
+               addMessage("bot", analysis2.message, [
+                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+               ]);
+            } else {
+               addMessage("bot", analysis2.message);
+               setTimeout(() => addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions ?"), 800);
+            }
+          } else {
+            const symptomsResult2 = analyzeSymptoms(fullCtx);
+            if (symptomsResult2.hypothesis) {
+              addMessage("bot", `${symptomsResult2.hypothesis}\n\n${symptomsResult2.nextQuestion}`);
+              setCascadePending(true);
+            } else {
+              addMessage("bot", "Merci pour ces précisions. Notre équipe technique analysera votre demande.\n\nQuelle quantité souhaitez-vous et avez-vous d'autres informations à ajouter ?");
+            }
+          }
         } else if (current === 3) {
+          setRequestData(prev => ({ ...prev, application: input }));
+          addMessage("bot", "Merci.\n\nPour finaliser votre demande, merci d'indiquer votre nom, société et numéro de téléphone :");
+        } else if (current === 4) {
            const contacts = extractContacts(input);
+           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
-             addMessage("bot", "Il nous manque encore le numéro de téléphone pour finaliser votre demande. Pourriez-vous nous le fournir ?");
-             setStep(current - 1);
+             setAwaitingField("phone");
+             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
              return;
            }
-           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
-           finalizeRequest();
+           setAwaitingField("email");
+           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi ?");
         }
       }
       
@@ -394,25 +544,23 @@ export default function ChatBot() {
        aiEquivStr = result.equivalent;
     }
     
-    // Inject the simulated thought process from the user into chat history
     addMessage("user", userInputMsg);
     
-    // Give the bot's calculated response
     setTimeout(() => {
       addMessage("bot", result.message);
       
-      // Follow up with normal flow integration
       setTimeout(() => {
         addTag("COURROIE");
         setRequestData(prev => ({ 
            ...prev, 
            flowType: "courroie", 
+           orientation: "PASCALE",
            aiAnalysis: `${userInputMsg} -> Equivalent : ${aiEquivStr}`,
            dimensions: aiEquivStr
         }));
         setCurrentFlow("courroie");
         setStep(2);
-        addMessage("bot", "Si vous souhaitez commander ou demander un prix pour cette courroie, quelle quantité vous faut-il et à quoi sert-elle (application) ?");
+        addMessage("bot", "Si vous souhaitez commander ou demander un prix pour cette courroie, quelle quantité vous faut-il et sur quelle machine est-elle montée ?");
       }, 1500);
       
     }, 600);
@@ -433,14 +581,27 @@ export default function ChatBot() {
             </p>
           </div>
         </div>
-        {currentFlow !== "home" && (
-          <button 
-            onClick={resetFlow}
-            className="text-white/80 hover:text-white transition-colors flex items-center gap-1 text-xs md:text-sm bg-black/10 px-3 py-2 rounded-full hover:bg-black/20 shrink-0 min-h-[44px]"
-          >
-            <ArrowLeft size={14} /> Retour
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Orientation badge */}
+          {currentFlow === "devis" && (
+            <span className="text-xs bg-orange-500/30 text-orange-100 px-2 py-1 rounded-full flex items-center gap-1 shrink-0">
+              <HardHat size={12} /> Alexandre
+            </span>
+          )}
+          {(currentFlow === "courroie" || currentFlow === "roulement" || currentFlow === "piece" || currentFlow === "compare") && (
+            <span className="text-xs bg-blue-400/30 text-blue-100 px-2 py-1 rounded-full flex items-center gap-1 shrink-0">
+              <UserCheck size={12} /> Pascale
+            </span>
+          )}
+          {currentFlow !== "home" && (
+            <button 
+              onClick={resetFlow}
+              className="text-white/80 hover:text-white transition-colors flex items-center gap-1 text-xs md:text-sm bg-black/10 px-3 py-2 rounded-full hover:bg-black/20 shrink-0 min-h-[44px]"
+            >
+              <ArrowLeft size={14} /> Retour
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Chat Messages */}

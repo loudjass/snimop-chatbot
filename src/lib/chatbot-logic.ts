@@ -6,7 +6,9 @@ export type RequestTag =
   | "URGENT" 
   | "TECHNIQUE" 
   | "HORS_STANDARD"
-  | "A_VERIFIER";
+  | "A_VERIFIER"
+  | "ALEXANDRE"
+  | "PASCALE";
 
 
 
@@ -20,10 +22,14 @@ export interface ChatbotData {
   application?: string;
   equipmentType?: string;
   issueDescription?: string;
+  issueType?: string;
+  symptoms?: string;
   location?: string;
   urgency?: string;
   hasPhoto?: boolean;
+  orientation?: "ALEXANDRE" | "PASCALE";
   contactName?: string;
+  contactFirstName?: string;
   contactEmail?: string;
   contactPhone?: string;
   contactCompany?: string;
@@ -61,15 +67,24 @@ export const getRequests = (): StoredRequest[] => {
   return existingStr ? JSON.parse(existingStr) : [];
 };
 
+// ==========================================
+// V3 WHATSAPP FORMAT — 11 fields
+// ==========================================
+
 export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]): string => {
   const number = process.env.NEXT_PUBLIC_SNIMOP_WHATSAPP_NUMBER || "33607877159"; 
   
-  let estimatedType = "";
-  if (data.flowType === "courroie") estimatedType = "Courroie";
-  else if (data.flowType === "roulement") estimatedType = "Roulement";
-  else estimatedType = data.flowType || "";
+  // Determine request type
+  const reqType = 
+    data.flowType === 'devis' ? 'Devis intervention' :
+    data.flowType === 'courroie' ? 'Pièce — Courroie' :
+    data.flowType === 'roulement' ? 'Pièce — Roulement' :
+    data.flowType === 'compare' ? 'Technique — Comparaison courroie' :
+    data.flowType === 'inconnu' ? 'Conseil / Identification' :
+    data.flowType === 'piece' ? 'Recherche de pièce' :
+    'Non renseigné';
 
-  // Remove coords and UI commands from the messages to create a pure technical string
+  // Remove UI-only messages
   const cleanMessages = userMessages.filter(m => 
     !m.includes("Je n'ai pas toutes les informations") && 
     !m.includes("Envoyer quand même") &&
@@ -78,6 +93,7 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
     !m.includes("Demande de devis") &&
     !m.includes("[Photo") &&
     !m.includes("Comparaison") &&
+    !m.includes("Recherche inversée") &&
     !(data.contactPhone && m.includes(data.contactPhone)) &&
     !(data.contactName && m.includes(data.contactName)) &&
     !(data.contactCompany && m.includes(data.contactCompany))
@@ -85,13 +101,7 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
 
   const fullText = cleanMessages.join(" ");
 
-  let productName = estimatedType || "Non renseigné";
-  if (data.tags.includes("COURROIE")) productName = "Courroie";
-  else if (data.tags.includes("ROULEMENT")) productName = "Roulement";
-  else if (data.flowType === "devis") productName = "Devis";
-  else if (data.flowType === "piece" && data.productType) productName = data.productType;
-
-  // Strict Parsing Variables
+  // Parse dimensions for belts
   let parsedDimensions = data.dimensions || "";
   let parsedLength = "";
   let parsedQuantity = data.quantity || "";
@@ -115,12 +125,6 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
     const qtyMatch = fullText.match(/\b(\d+)\s*(p[iieè]{1,2}ce?s?|qt[ée]|unit[ée]s?)\b/i);
     if (qtyMatch) {
        parsedQuantity = qtyMatch[1];
-    } else {
-       const possibleNumbers = fullText.match(/\b(\d{1,2})\b/g);
-       if (possibleNumbers) {
-          const cleanNumbers = possibleNumbers.filter(n => !(dimMatch && (n === dimMatch[1] || n === dimMatch[2])));
-          if (cleanNumbers.length > 0) parsedQuantity = cleanNumbers[cleanNumbers.length - 1];
-       }
     }
   } else if (data.tags.includes("ROULEMENT")) {
     const dimMatch = fullText.match(/\b(\d+)[xX*](\d+)[xX*](\d+)\b/);
@@ -130,40 +134,37 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
     
     const qtyMatch = fullText.match(/\b(\d+)\s*(p[iieè]{1,2}ce?s?|qt[ée]|unit[ée]s?)\b/i);
     if (qtyMatch) parsedQuantity = qtyMatch[1];
-    else {
-       const possibleNumbers = fullText.match(/\b(\d{1,2})\b/g);
-       if (possibleNumbers) {
-          const cleanNumbers = possibleNumbers.filter(n => !(dimMatch && (n === dimMatch[1] || n === dimMatch[2] || n === dimMatch[3])));
-          if (cleanNumbers.length > 0) parsedQuantity = cleanNumbers[cleanNumbers.length - 1];
-       }
-    }
   }
 
-  const reqType = data.flowType === 'devis' ? 'Devis' : (data.flowType === 'inconnu' ? 'Conseil' : 'Pièce');
+  // Detect orientation
+  const orientedTo = data.orientation === "ALEXANDRE" ? "Alexandre (terrain / intervention)" :
+                     data.orientation === "PASCALE" ? "Pascale (technique / fournitures)" :
+                     data.flowType === "devis" ? "Alexandre (terrain / intervention)" :
+                     "Pascale (technique / fournitures)";
 
+  // Piece / besoin field
+  const pieceBesoin = parsedDimensions || data.reference || data.productType || data.issueDescription || "Non renseigné";
+  const pieceFull = parsedLength ? `${pieceBesoin} — Longueur ${parsedLength}` : pieceBesoin;
+
+  // Build v3 format
   let text = `— DEMANDE CLIENT SNIMOP —\n\n`;
   text += `Type : ${reqType}\n`;
-  text += `Produit : ${productName}\n\n`;
-  
-  if (parsedDimensions || data.reference) {
-     if (data.reference && !parsedDimensions) text += `Référence : ${data.reference}\n`;
-     if (parsedDimensions) text += `Dimensions : ${parsedDimensions}\n`;
-  } else if (!data.tags.includes("COURROIE") && !data.tags.includes("ROULEMENT")) {
-     text += `Informations : ${fullText || "Non renseignées"}\n`;
-  }
-  
-  if (data.tags.includes("COURROIE")) {
-     text += `Longueur : ${parsedLength || "Non renseignée"}\n`;
-  }
-  
-  text += `Quantité : ${parsedQuantity || "Non renseignée"}\n\n`;
+  text += `Équipement : ${data.equipmentType || "Non renseigné"}\n`;
+  text += `Pièce / besoin : ${pieceFull}\n`;
+  text += `Problème : ${data.issueDescription || "Non renseigné"}\n`;
+  text += `Symptômes : ${data.symptoms || "Non renseigné"}\n`;
   text += `Application : ${data.application || "Non renseigné"}\n`;
-  text += `Photo : ${data.hasPhoto ? "Oui" : "Non"}\n\n`;
+  text += `Localisation : ${data.location || "Non renseigné"}\n`;
+  text += `Urgence : ${data.urgency || "Non renseigné"}\n`;
+  text += `Photo : ${data.hasPhoto ? "Oui" : "Non"}\n`;
+  text += `Quantité : ${parsedQuantity || "Non renseignée"}\n`;
+  text += `→ ${orientedTo}\n\n`;
 
   text += `— COORDONNÉES —\n`;
   text += `Nom : ${data.contactName || "Non renseigné"}\n`;
   text += `Société : ${data.contactCompany || "Non renseignée"}\n`;
   text += `Téléphone : ${data.contactPhone || "Non renseigné"}\n`;
+  text += `E-mail : ${data.contactEmail || "Non renseigné"}\n`;
   
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 };
@@ -171,21 +172,113 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
 export const calculateCompletionScore = (data: ChatbotData, userMessages: string[]): number => {
   let score = 30; // base score for starting
   if (data.tags.length > 0) score += 10;
-  if (data.aiAnalysis) score += 20;
-  if (data.hasPhoto) score += 20;
+  if (data.aiAnalysis) score += 15;
+  if (data.hasPhoto) score += 15;
+  if (data.symptoms) score += 5;
+  if (data.location) score += 5;
+  if (data.urgency) score += 5;
+  if (data.contactEmail) score += 5;
   
   const cleanMessages = userMessages.filter(m => 
-    !m.includes("Je n'ai pas toutes les informations") && 
-    !m.includes("Identifier") && 
+    !m.includes("Je n'ai pas toutes les informations") &&
+    !m.includes("Identifier") &&
     !m.includes("Recherche") &&
     !m.includes("Demande de devis")
   );
 
   const totalLength = cleanMessages.join(" ").length;
-  if (totalLength > 15) score += 10;
-  if (totalLength > 40) score += 10; // more details means higher score
+  if (totalLength > 15) score += 5;
+  if (totalLength > 40) score += 5;
 
   return Math.min(score, 100);
+};
+
+// ==========================================
+// SYMPTOM ACCUMULATION ENGINE
+// ==========================================
+
+export const analyzeSymptoms = (accumulatedContext: string): {
+  hypothesis: string;
+  suggestedType: "COURROIE" | "ROULEMENT" | "DEVIS" | "PIECE" | null;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  nextQuestion: string;
+} => {
+  const ctx = accumulatedContext.toLowerCase();
+
+  const tourne = ctx.includes("tourne") || ctx.includes("rotation") || ctx.includes("axe");
+  const bruit = ctx.includes("bruit") || ctx.includes("grince") || ctx.includes("claque") || ctx.includes("craque");
+  const chauffe = ctx.includes("chauffe") || ctx.includes("chaud") || ctx.includes("échauffement");
+  const vibre = ctx.includes("vibr");
+  const patine = ctx.includes("patine") || ctx.includes("glisse") || ctx.includes("slip");
+  const casse = ctx.includes("cassé") || ctx.includes("cassée") || ctx.includes("coupée") || ctx.includes("rompue");
+  const poulie = ctx.includes("poulie") || ctx.includes("compresseur") || ctx.includes("courroi");
+  const porte = ctx.includes("porte") || ctx.includes("rideau") || ctx.includes("volet") || ctx.includes("barrière") || ctx.includes("automatisme") || ctx.includes("motorisation") || ctx.includes("sectionnel");
+  const intervention = ctx.includes("panne") || ctx.includes("répara") || ctx.includes("interven") || ctx.includes("chantier") || ctx.includes("install");
+
+  // Intervention / Alexandre domain
+  if (porte || (intervention && !tourne && !poulie)) {
+    return {
+      hypothesis: "Il s'agit probablement d'une demande d'**intervention terrain** (porte, rideau, automatisme). Je vais vous orienter vers **Alexandre**.",
+      suggestedType: "DEVIS",
+      confidence: "HIGH",
+      nextQuestion: "Pouvez-vous me préciser le type d'équipement (porte sectionnelle, rideau métallique, volet...) et la nature du problème ?"
+    };
+  }
+
+  // Belt domain
+  if (patine || casse || poulie) {
+    return {
+      hypothesis: "Les symptômes indiquent probablement une **courroie** défectueuse (patinage, casse, problème de transmission).",
+      suggestedType: "COURROIE",
+      confidence: "HIGH",
+      nextQuestion: "Avez-vous la largeur ou une référence inscrite sur la courroie ?"
+    };
+  }
+
+  // Bearing domain — symptom cross-check
+  if (tourne && bruit && chauffe) {
+    return {
+      hypothesis: "Ensemble de symptômes cohérent : **rotation + bruit + échauffement** → probabilité élevée de **roulement ou palier usé**.",
+      suggestedType: "ROULEMENT",
+      confidence: "HIGH",
+      nextQuestion: "Pouvez-vous me donner les dimensions (int × ext × épaisseur) ou la référence gravée sur la bague ?"
+    };
+  }
+
+  if (tourne && (bruit || chauffe || vibre)) {
+    return {
+      hypothesis: "Les symptômes (rotation + " + (bruit ? "bruit" : "") + (chauffe ? " échauffement" : "") + (vibre ? " vibration" : "") + ") suggèrent un **roulement ou palier** en fin de vie.",
+      suggestedType: "ROULEMENT",
+      confidence: "MEDIUM",
+      nextQuestion: "Est-ce que la pièce est montée sur un axe ? Avez-vous la référence ou les dimensions ?"
+    };
+  }
+
+  if (bruit && !tourne) {
+    return {
+      hypothesis: "Un **bruit métallique** sans rotation identifiée peut indiquer un défaut mécanique : roulement, frottement, jeu.",
+      suggestedType: "ROULEMENT",
+      confidence: "MEDIUM",
+      nextQuestion: "Est-ce que la pièce tourne ou est-ce un bruit de frottement statique ?"
+    };
+  }
+
+  if (vibre) {
+    return {
+      hypothesis: "Une **vibration** anormale peut venir d'un roulement, d'un déséquilibre ou d'un mauvais alignement.",
+      suggestedType: "ROULEMENT",
+      confidence: "LOW",
+      nextQuestion: "Est-ce que la vibration est présente à l'arrêt ou uniquement en rotation ?"
+    };
+  }
+
+  // Generic fallback
+  return {
+    hypothesis: "",
+    suggestedType: null,
+    confidence: "LOW",
+    nextQuestion: "Est-ce que la pièce tourne ? Y a-t-il un bruit ou un échauffement ?"
+  };
 };
 
 // ==========================================
@@ -235,7 +328,7 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   const profileRegex = /\b(spz|spa|spb|spc|xpz|xpa|xpb|xpc|t5|t10|at10|8m|14m|ax|bx|cx|dx|3l|4l|5l)\b/i;
   let matchProfile = rawInputLow.match(profileRegex);
 
-  // Pour les profils à une lettre (A, B, C, Z, E), on sécurise contre les apostrophes ("c'est") ou les "a"
+  // Pour les profils à une lettre (A, B, C, Z, E)
   const singleLetterRegex = /(?:profil|section|type|courroie)\s+([a-ez])\b/i;
   const matchSingleLetter = rawInputLow.match(singleLetterRegex);
   if (!matchProfile && matchSingleLetter) {
@@ -283,12 +376,11 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
     explicitProfile = matchProfile[1].toUpperCase();
   } else if (letterMatch && ['a','b','c','z'].includes(letterMatch[1])) {
     explicitProfile = letterMatch[1].toUpperCase();
-    if (!lengthStr) lengthStr = letterMatch[2]; // implicit length
+    if (!lengthStr) lengthStr = letterMatch[2];
   }
 
   // Detect Mismatch between Dimensions and Profile
   if (expectedProfileFromDim && explicitProfile) {
-     // A vs AX is fine, A vs B is not.
      if (expectedProfileFromDim !== explicitProfile && expectedProfileFromDim.replace('X','') !== explicitProfile.replace('X','')) {
         const getDimensionsOfProfile = (profile: string) => {
            switch(profile.replace('X','')) {
@@ -307,20 +399,15 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
         let actualProfileDims = getDimensionsOfProfile(explicitProfile);
         let correctionMsg = `Attention, une section **${matchDim![1]}x${matchDim![2]}** correspond à un profil **${expectedProfileFromDim}** et non **${explicitProfile}**.\n\nLe profil **${explicitProfile}** est en **${actualProfileDims}**.\nJe vous recommande donc de vérifier la section avant de valider.`;
         
-         let orientHook = "";
-         if (actualProfileDims !== "inconnue") {
-             orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
-         }
-
          let struct = `1. 🔍 Diagnostic\n${symptomMsg || "Recherche de courroie avec incohérence technique."}\n\n`;
          struct += `2. 🛠 Solution\n${correctionMsg}\n\n`;
-         struct += `3. 📦 Proposition\nJe vous recommande de vérifier si le marquage lu est bien **${explicitProfile}** ou si la section mesurée est réellement **${matchDim![1]}x${matchDim![2]}**, car ces deux informations ne correspondent pas au même profil.${orientHook}\n\n`;
+         struct += `3. 📦 Proposition\nJe vous recommande de vérifier si le marquage lu est bien **${explicitProfile}** ou si la section mesurée est réellement **${matchDim![1]}x${matchDim![2]}**, car ces deux informations ne correspondent pas au même profil.\n\n`;
          struct += `4. ❓ Question utile\nLaquelle des deux informations avez-vous lue directement sur la courroie ?`;
          
         needsCascade = true;
         return { matches: true, message: struct, tags, needsCascade, detectedType };
      } else {
-        probableProfile = explicitProfile; // Overwrite expected if they match or are a crantée variant (AX overrides A)
+        probableProfile = explicitProfile;
      }
   } else if (explicitProfile) {
      probableProfile = explicitProfile;
@@ -334,12 +421,10 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
      let q = "";
 
      if (lengthStr) {
-        // CompareBelt
         let val = parseInt(lengthStr, 10);
         let lType = lengthType ? lengthType : "Ld";
-        if (lType.toLowerCase() === "l") lType = "Ld"; // Normalize
+        if (lType.toLowerCase() === "l") lType = "Ld";
         
-        // Ensure case is proper for standard Ld syntax
         lType = lType.charAt(0).toUpperCase() + lType.slice(1).toLowerCase();
         if (lType === "") lType = "Ld";
 
@@ -351,7 +436,7 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
            prop += `\nQuantité enregistrée : ${qtyStr}`;
            q = "Pour me confirmer cette compatibilité, pouvez-vous m'indiquer la machine sur laquelle elle sera montée ?";
         } else {
-           q = "Afin de m'assurer que ce profil passera correctement, sur quel type de machine/poulie est-elle montée ?";
+           q = "Afin de m'assurer que ce profil passera correctement, sur quel type de machine ou équipement est-elle montée ?";
         }
         needsCascade = true;
      } else {
@@ -360,21 +445,13 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
         } else {
            prop = `Le profil **${probableProfile}** est repéré. Nous allons finaliser la référence ensemble.`;
         }
-        q = "Je peux vous proposer une référence compatible. Avez-vous la longueur précise de votre courroie (Ld, Li ou extérieure) ?";
+        q = "Avez-vous la longueur précise de votre courroie (Ld, Li ou extérieure) ?";
         needsCascade = true;
      }
 
      let struct2 = `1. 🔍 Diagnostic\n${diag}\n\n`;
      struct2 += `2. 🛠 Solution\n${sol}\n\n`;
-     
-     // Orientation hook ONLY at the very end of block 3
-     let orientHook = "";
-     if (symptomMsg || lengthStr || matchDim || explicitProfile) {
-         orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
-     }
-     
-     struct2 += `3. 📦 Proposition\n${prop}${orientHook}\n\n`;
-     struct2 = struct2.trim() + "\n\n"; // Ensure no trailing double newline if hook is there, tight end.
+     struct2 += `3. 📦 Proposition\n${prop}\n\n`;
      struct2 += `4. ❓ Question utile\n${q}`;
 
      return { matches: true, message: struct2, tags, needsCascade, detectedType };
@@ -389,12 +466,7 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
 
      let struct3 = `1. 🔍 Diagnostic\n${diag}\n\n`;
      struct3 += `2. 🛠 Solution\n${sol}\n\n`;
-     
-     let orientHook = "";
-     if (symptomMsg) {
-         orientHook = "\nSi vous le souhaitez, je peux vous orienter vers une solution adaptée.";
-     }
-     struct3 += `3. 📦 Proposition\n${prop}${orientHook}\n\n`;
+     struct3 += `3. 📦 Proposition\n${prop}\n\n`;
      struct3 += `4. ❓ Question utile\n${q}`;
 
      needsCascade = true;
@@ -404,6 +476,10 @@ export const analyzeBelt = (input: string): { matches: boolean; message: string;
   return { matches: false, message: "", tags: [], needsCascade: false };
 };
 
+
+// ==========================================
+// BEARING ANALYSIS — v3 4-BLOCK FORMAT
+// ==========================================
 
 export const analyzeBearing = (input: string): { matches: boolean; message: string; tags: RequestTag[]; needsCascade: boolean; detectedType?: string } => {
   const rawInputLow = input.toLowerCase();
@@ -417,6 +493,12 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
   let message = "";
   let needsCascade = false;
   let detectedType = "Roulement";
+
+  // Symptom context
+  const hasBruit = rawInputLow.includes("bruit") || rawInputLow.includes("grince");
+  const hasChauffe = rawInputLow.includes("chauffe") || rawInputLow.includes("chaud");
+  const hasVibre = rawInputLow.includes("vibr");
+  const hasTourne = rawInputLow.includes("tourne") || rawInputLow.includes("axe") || rawInputLow.includes("rotation");
 
   // Dimensions : int x ext x epaisseur
   const dimRegex = /\b(\d+)\s*[xX*]\s*(\d+)\s*[xX*]\s*(\d+)\b/;
@@ -440,7 +522,7 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
     else if (int === "30" && ext === "72" && ep === "19") likelyType = "6306";
   }
   
-  // Try finding strict bearing numbers if no dimensions matched
+  // Try finding strict bearing numbers
   const numRegex = /(6[023]\d{2}|22[23]\d{2}|30[23]\d{2}|32[02]\d{2})/;
   const matchNum = input.match(numRegex);
   if (matchNum && !likelyType) {
@@ -448,37 +530,67 @@ export const analyzeBearing = (input: string): { matches: boolean; message: stri
   }
 
   if (likelyType) {
-    let baseFormat = `Vous recherchez un roulement ${likelyType}.`;
-    
-    // Suffx parsing
     let suffixText = "";
     if (rawInputLow.includes('2rs') || rawInputLow.includes('ddu') || rawInputLow.includes('llu')) {
-       suffixText = " en version étanche (2RS / DDU / LLU).";
+       suffixText = " en version **étanche** (2RS / DDU / LLU).";
     } else if (rawInputLow.includes('zz')) {
-       suffixText = " en version avec flasques métal (ZZ).";
+       suffixText = " en version **flasques métal** (ZZ).";
     }
 
-    if (suffixText) {
-       message = baseFormat.replace(".", suffixText) + "\n\nNous pouvons vous proposer 3 gammes : économique (ZEN / générique), standard (NTN / SNR) ou premium (SKF / FAG).\n\nQuelle quantité souhaitez-vous ?";
-    } else {
-       message = baseFormat + "\n\nSouhaitez-vous une version étanche (2RS), flasque métal (ZZ) ou ouverte ?\n\nNous pouvons vous proposer 3 gammes : économique, standard ou premium.\n\nQuelle quantité souhaitez-vous ?";
-    }
-    
+    const diagText = hasBruit || hasChauffe
+      ? `Vous recherchez un roulement **${likelyType}**${suffixText}. Les symptômes mentionnés (${hasBruit ? "bruit " : ""}${hasChauffe ? "échauffement " : ""}${hasVibre ? "vibration" : ""}) confirment l'usure du roulement en place.`
+      : `Vous recherchez un roulement **${likelyType}**${suffixText}.`;
+
+    const solText = suffixText
+      ? `Nous pouvons vous proposer 3 gammes : économique (ZEN / générique), standard (NTN / SNR) ou premium (SKF / FAG).`
+      : `Souhaitez-vous une version étanche (2RS), flasque métal (ZZ) ou ouverte ?\nNous proposons 3 gammes : économique, standard ou premium.`;
+
+    const propText = `✅ Référence identifiée : **${likelyType}**.\nNous pouvons vous faire une proposition rapide selon votre gamme souhaitée.`;
+
+    const qText = suffixText
+      ? "Quelle quantité souhaitez-vous ?"
+      : "Quel type de protection souhaitez-vous (2RS, ZZ, ouvert) et quelle quantité ?";
+
+    message = `1. 🔍 Diagnostic\n${diagText}\n\n2. 🛠 Solution\n${solText}\n\n3. 📦 Proposition\n${propText}\n\n4. ❓ Question utile\n${qText}`;
     needsCascade = true;
     return { matches: true, message, tags, needsCascade, detectedType };
   }
 
   // Handle incoherent refs
   if (input.match(/\b([A-Z]*\d{5,}[A-Z]*)\b/)) {
-     message = "Cette référence ne correspond pas à un standard connu, mais nous pouvons vous proposer un équivalent.\nPourriez-vous nous donner les dimensions (intérieur x extérieur x épaisseur) ?";
+     message = `1. 🔍 Diagnostic\nCette référence ne correspond pas à un standard roulement connu.\n\n2. 🛠 Solution\nNous pouvons rechercher un équivalent à partir des dimensions de la pièce.\n\n3. 📦 Proposition\nUne comparaison par cotes (int × ext × épaisseur) nous permettra de trouver la correspondance exacte.\n\n4. ❓ Question utile\nPouvez-vous nous donner les dimensions gravées ou mesurées (intérieur × extérieur × épaisseur) ?`;
      needsCascade = true;
      return { matches: true, message, tags, needsCascade, detectedType };
   }
 
-  if (rawInputLow.includes("bruit sur axe") || rawInputLow.includes("roulement")) {
-      message = "Dans ce type d’application, il s’agit généralement d’une usure du roulement.\nVous pouvez nous fournir les dimensions (intérieur x extérieur x épaisseur) ou la référence gravée sur la bague ?";
-      needsCascade = true;
-      return { matches: true, message, tags, needsCascade, detectedType };
+  // Palier detection
+  if (rawInputLow.match(/ucp|ucf|ucfl|uct|ucfc|insert uc|palier/)) {
+    let palierType = "";
+    if (rawInputLow.match(/arbre 20|20\s*mm/)) palierType = "série 204 (alésage 20 mm)";
+    else if (rawInputLow.match(/arbre 25|25\s*mm/) || rawInputLow.match(/205/)) palierType = "série 205 (alésage 25 mm)";
+    
+    const diagP = palierType
+      ? `Vous recherchez un palier **${palierType}**. Il est interchangeable toutes marques.`
+      : "Vous recherchez un **palier** (support de roulement).";
+    
+    message = `1. 🔍 Diagnostic\n${diagP}\n\n2. 🛠 Solution\nPour éviter toute erreur, le type de corps est important : semelle (UCP), bride carrée (UCF), ovale (UCFL).\n\n3. 📦 Proposition\nNous pouvons vous proposer ce palier en gamme économique ou marque (SKF, SNR, NTN).\n\n4. ❓ Question utile\nS'agit-il d'un palier semelle (UCP), bride carrée (UCF) ou ovale (UCFL) ? Quelle quantité ?`;
+    needsCascade = true;
+    detectedType = "Palier";
+    return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
+  // Symptom-based bearing detection
+  if (hasTourne && (hasBruit || hasChauffe || hasVibre)) {
+    const symptoms = [hasBruit && "bruit", hasChauffe && "échauffement", hasVibre && "vibration"].filter(Boolean).join(", ");
+    message = `1. 🔍 Diagnostic\nLes symptômes détectés (**${symptoms}** sur une pièce en rotation) correspondent très souvent à un **roulement usé ou défectueux**.\n\n2. 🛠 Solution\nLe roulement est la pièce tournante la plus sujette à l'usure dans ce type de cas. Il est possible qu'un palier soit également en cause si la pièce est supportée par un corps de palier.\n\n3. 📦 Proposition\nNous pouvons identifier le roulement exact dès que vous nous communiquez les dimensions ou la référence.\n\n4. ❓ Question utile\nPouvez-vous relever la référence gravée sur la bague du roulement, ou mesurer son diamètre intérieur, extérieur et épaisseur ?`;
+    needsCascade = true;
+    return { matches: true, message, tags, needsCascade, detectedType };
+  }
+
+  if (rawInputLow.includes("roulement")) {
+    message = `1. 🔍 Diagnostic\nVous souhaitez identifier ou remplacer un **roulement**.\n\n2. 🛠 Solution\nLa référence est généralement gravée sur la bague extérieure. Si elle est illisible, les 3 dimensions suffisent.\n\n3. 📦 Proposition\nNous proposons toutes gammes (économique, standard, premium) avec livraison rapide.\n\n4. ❓ Question utile\nPouvez-vous nous donner la référence gravée ou les dimensions (intérieur × extérieur × épaisseur) ?`;
+    needsCascade = true;
+    return { matches: true, message, tags, needsCascade, detectedType };
   }
   
   return { matches: false, message: "", tags: [], needsCascade: false };
@@ -488,27 +600,13 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   const normInput = input.toLowerCase();
   
   if (normInput.match(/ucp|ucf|ucfl|uct|ucfc|insert uc|palier/)) {
-    let msg = "Vous recherchez un palier.";
-    if (normInput.match(/arbre 20|20\s*mm/)) {
-      msg = "Vous recherchez un palier série 204 (alésage 20 mm). Il est interchangeable toutes marques.";
-    } else if (normInput.match(/arbre 25|25\s*mm/) || normInput.match(/205/)) {
-      msg = "Vous recherchez un palier série 205 (alésage 25 mm). Il est interchangeable toutes marques.";
-    } else {
-      msg = "Vous recherchez un palier.";
-    }
-    return {
-      matches: true,
-      message: msg + "\n\nPour éviter toute erreur, merci de nous préciser s'il s'agit d'un palier semelle (UCP), à bride carrée (UCF), ovale (UCFL), ou de nous envoyer une photo.\n\nQuelle quantité souhaitez-vous ?",
-      tags: ["PIECE", "TECHNIQUE"],
-      needsCascade: true,
-      detectedType: "Palier"
-    };
+    return analyzeBearing(input);
   }
 
   if (normInput.match(/chc|th|tf|btr|six pans creux|inox|8\.8|10\.9|12\.9|m[68]0?|vis|visserie/)) {
     return {
       matches: true,
-      message: "[Identification probable]\nCela correspond probablement à de la visserie.\n\nPour éviter toute erreur, merci de nous préciser :\n- le diamètre (M6, M8, M10…)\n- la longueur\n- le type de tête (CHC, TH, TF…)\n- la matière ou classe (inox, 8.8...) si utile.\nVous pouvez aussi nous envoyer une photo.",
+      message: "1. 🔍 Diagnostic\nCela correspond probablement à de la **visserie** ou fixation.\n\n2. 🛠 Solution\nPour éviter toute erreur, merci de nous préciser :\n- le diamètre (M6, M8, M10…)\n- la longueur\n- le type de tête (CHC, TH, TF…)\n- la matière ou classe (inox, 8.8...) si utile.\n\n3. 📦 Proposition\nNous disposons d'un large stock de visserie standard et inox. Envoyez-nous une photo si besoin.\n\n4. ❓ Question utile\nQuel est le diamètre et la longueur de la vis recherchée ?",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Visserie"
@@ -518,7 +616,7 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   if (normInput.match(/accouplement|flector|étoile|moyeu|rotex|hrc|n-eupex/)) {
     return {
       matches: true,
-      message: "Cela correspond probablement à un accouplement.\n\nPour éviter toute erreur, merci de nous préciser la marque de l'accouplement, les diamètres de l'arbre, ou de nous envoyer des photos des moyeux et/ou du flector central.",
+      message: "1. 🔍 Diagnostic\nCela correspond probablement à un **accouplement** élastique.\n\n2. 🛠 Solution\nPour éviter toute erreur, merci de nous préciser la marque, les diamètres d'arbre et la taille de l'accouplement.\n\n3. 📦 Proposition\nNous pouvons proposer des pièces d'origine ou équivalentes selon votre besoin.\n\n4. ❓ Question utile\nAvez-vous la marque et la taille de l'accouplement, ou pouvez-vous envoyer une photo des moyeux ?",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Accouplement"
@@ -528,7 +626,7 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   if (normInput.match(/pneumatique|verin|distributeur|raccord|festo|smc|électrovanne/)) {
     return {
       matches: true,
-      message: "Cela correspond probablement à un composant pneumatique.\n\nPour éviter toute erreur, merci de nous préciser la marque, la référence exacte présente sur l'étiquette, ou la fonction de la pièce (taille des filetages/orifices).\nVous pouvez par ailleurs nous envoyer la photo de la plaque signalétique.",
+      message: "1. 🔍 Diagnostic\nCela correspond probablement à un **composant pneumatique** (vérin, distributeur, raccord).\n\n2. 🛠 Solution\nLa marque et la référence exacte sur l'étiquette sont indispensables pour un approvisionnement fiable.\n\n3. 📦 Proposition\nNous travaillons avec les principaux fournisseurs (Festo, SMC, Parker). Envoyez-nous la plaque signalétique.\n\n4. ❓ Question utile\nQuelle est la marque et la référence visible sur la pièce ?",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Pneumatique"
@@ -538,7 +636,7 @@ export const analyzeGeneral = (input: string): { matches: boolean; message: stri
   if (normInput.match(/filtre|filtration|cartouche|élément filtrant|hydraulique|air/)) {
     return {
       matches: true,
-      message: "Cela correspond probablement à un élément de filtration.\n\nPour éviter toute erreur, merci de nous préciser s'il s'agit d'un filtre à air, à huile, ou hydraulique. Les dimensions exactes ou la référence de la machine/cartouche nous sont indispensables.",
+      message: "1. 🔍 Diagnostic\nCela correspond probablement à un **élément de filtration** (air, huile ou hydraulique).\n\n2. 🛠 Solution\nLes dimensions exactes ou la référence de la cartouche sont indispensables pour garantir la bonne cote.\n\n3. 📦 Proposition\nNous pouvons proposer des éléments d'origine ou équivalents selon votre machine.\n\n4. ❓ Question utile\nS'agit-il d'un filtre à air, à huile ou hydraulique ? Avez-vous la référence ou les dimensions ?",
       tags: ["PIECE", "TECHNIQUE"],
       needsCascade: true,
       detectedType: "Filtre"
@@ -572,9 +670,8 @@ export const compareBelt = (profile: string, lengthType: string, value: number):
     "3L": {liToLd: 22, liToLe: 38},
   };
 
-  const map = conversions[profile] || {liToLd: 30, liToLe: 50}; // Default fallback
+  const map = conversions[profile] || {liToLd: 30, liToLe: 50};
 
-  // Calculate Li, Le, Ld from given input
   if (lengthType === "Li") {
     li = value;
     ld = value + map.liToLd;
@@ -645,7 +742,6 @@ export const compareBeltReverse = (width: number, height: number, lengthType: st
   const mainProfile = probableProfiles[0];
   const others = probableProfiles.slice(1).join(", ");
   
-  // Reuse existing logic to calculate Ld, Li, Le for the main profile
   const converted = compareBelt(mainProfile, lengthType, value);
   const convParts = converted.message.match(/→ Li : \*\*\d+\*\*\n→ Le : \*\*\d+\*\*\n→ Ld : \*\*\d+\*\*/);
   const convText = convParts ? `\n\nConversions probables pour le profil ${mainProfile} :\n${convParts[0]}\n` : "";
@@ -657,4 +753,3 @@ export const compareBeltReverse = (width: number, height: number, lengthType: st
     message: resultMsg
   };
 };
-
