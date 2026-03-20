@@ -1,78 +1,138 @@
 "use client";
 
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight } from "lucide-react";
+import { motion } from "framer-motion";
+import { PhoneCall, FileText, ChevronRight, Shield, Clock, Wrench } from "lucide-react";
 import ChatBot from "@/components/ChatBot";
 import Link from "next/link";
 
-type RequestType = "parts" | "quote" | "advice" | "callback" | null;
-
 export default function Home() {
-  const [selectedType, setSelectedType] = useState<RequestType>(null);
-  
   return (
-    <main className="min-h-screen relative flex flex-col pt-6 md:pt-12 overflow-x-hidden">
-      {/* Background decorations */}
-      <div className="absolute top-0 inset-x-0 h-[500px] bg-gradient-to-b from-brand-blue/10 to-transparent -z-10" />
-      <div className="absolute top-0 inset-x-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-20 -z-10 mix-blend-overlay h-[500px]" />
+    <main className="min-h-screen relative flex flex-col overflow-x-hidden bg-slate-950">
 
-      <div className="w-full max-w-5xl mx-auto px-4 md:px-8 flex flex-col h-[100svh] md:h-auto pb-4 md:pb-0">
-        {/* Header section */}
-        <header className="flex items-center justify-between mb-8 md:mb-16 shrink-0">
+      {/* ── Industrial background image — darkened for legibility ── */}
+      <div
+        className="absolute inset-0 -z-10"
+        style={{
+          backgroundImage: "url('/bg-industrial.jpg')",
+          backgroundSize: "cover",
+          backgroundPosition: "center top",
+          backgroundRepeat: "no-repeat",
+          opacity: 0.18,
+          filter: "blur(1px) saturate(0.7)",
+        }}
+      />
+      {/* Blue overlay for brand coherence */}
+      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-slate-950 via-brand-blue/20 to-slate-950" />
+      {/* Bottom fade */}
+      <div className="absolute bottom-0 inset-x-0 h-32 bg-gradient-to-t from-slate-950 to-transparent -z-10" />
+
+      <div className="w-full max-w-6xl mx-auto px-4 md:px-8 flex flex-col min-h-screen pb-4">
+
+        {/* ── HEADER ── */}
+        <header className="flex items-center justify-between py-5 md:py-7 shrink-0">
+          {/* Logo SNIMOP */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-brand-blue flex items-center justify-center text-white shadow-xl shadow-brand-blue/20 shrink-0">
-              <Wrench size={22} />
+            <div className="relative flex items-center">
+              <div className="absolute inset-0 rounded-xl bg-white/10 blur-md" />
+              <img
+                src="/snimop-logo.jpg"
+                alt="SNIMOP"
+                className="relative h-10 md:h-12 w-auto object-contain rounded-lg"
+                style={{ maxWidth: 160 }}
+              />
             </div>
-            <span className="text-xl md:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">SNIMOP</span>
           </div>
-          
-          <div className="hidden md:flex items-center space-x-6 text-sm font-medium text-slate-600 dark:text-slate-300">
-            <span className="flex items-center gap-2 hover:text-brand-blue transition-colors cursor-pointer"><PhoneCall size={16} /> Contact</span>
-            <Link href="/admin" className="flex items-center gap-2 hover:text-brand-blue transition-colors cursor-pointer"><FileText size={16} /> Admin</Link>
-          </div>
+
+          {/* Nav */}
+          <nav className="flex items-center gap-3 md:gap-6 text-sm font-medium text-slate-400">
+            <a
+              href="tel:+33607877159"
+              className="hidden md:flex items-center gap-2 hover:text-white transition-colors"
+            >
+              <PhoneCall size={15} /> 06 07 87 71 59
+            </a>
+            <Link
+              href="/admin"
+              className="flex items-center gap-2 hover:text-white transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/30"
+            >
+              <FileText size={15} />
+              <span className="hidden sm:inline">Admin</span>
+            </Link>
+          </nav>
         </header>
 
-        <div className="flex flex-col lg:flex-row gap-6 md:gap-12 items-start justify-between flex-1 min-h-0">
-          
-          {/* Hero text */}
-          <div className="lg:w-1/2 pt-2 md:pt-8 shrink-0">
+        {/* ── MAIN CONTENT ── */}
+        <div className="flex flex-col lg:flex-row gap-8 md:gap-16 items-start justify-between flex-1">
+
+          {/* Hero text — left side */}
+          <div className="lg:w-[44%] pt-4 md:pt-12 shrink-0">
             <motion.div
-              initial={{ opacity: 0, y: 20 }}
+              initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5 }}
             >
-              <div className="inline-flex items-center rounded-full px-3 py-1 text-xs md:text-sm font-medium text-brand-blue bg-blue-50 dark:bg-brand-blue/10 dark:text-brand-blue-light mb-4 md:mb-6 border border-blue-100 dark:border-brand-blue/20">
-                <span className="flex h-2 w-2 rounded-full bg-brand-blue mr-2 animate-pulse"></span>
-                Assistant Intelligent SNIMOP
+              {/* Badge */}
+              <div className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold text-brand-blue-light bg-brand-blue/10 mb-6 border border-brand-blue/20">
+                <span className="flex h-2 w-2 rounded-full bg-green-400 mr-2 animate-pulse" />
+                Techniciens disponibles
               </div>
-              <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-slate-900 dark:text-white leading-tight mb-4 md:mb-6">
-                En quoi pouvons-nous vous <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-blue to-brand-blue-light">aider aujourd'hui ?</span>
+
+              {/* Headline */}
+              <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold text-white leading-tight mb-5">
+                Un problème technique ?{" "}
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-blue-light to-cyan-300">
+                  On s'en occupe.
+                </span>
               </h1>
-              <p className="text-base md:text-lg text-slate-600 dark:text-slate-400 mb-6 md:mb-8 max-w-lg hidden sm:block">
-                Notre assistant virtuel est là pour qualifier votre besoin rapidement et vous mettre en relation avec le bon expert SNIMOP.
+
+              <p className="text-base md:text-lg text-slate-400 mb-8 max-w-md">
+                Décrivez votre besoin. On vous met en contact direct avec le bon technicien SNIMOP — pièce ou intervention.
               </p>
-              
-              <div className="hidden lg:flex gap-4">
-                <button 
+
+              {/* Key points */}
+              <div className="flex flex-col gap-3 mb-10">
+                {[
+                  { icon: <Wrench size={16} />, text: "Pièces techniques : roulements, courroies, visserie" },
+                  { icon: <Shield size={16} />, text: "Interventions terrain : portes, rideaux, portails" },
+                  { icon: <Clock size={16} />, text: "Réponse rapide — depuis 1983 à votre service" },
+                ].map((item, i) => (
+                  <div key={i} className="flex items-center gap-3 text-slate-300 text-sm">
+                    <span className="text-brand-blue-light shrink-0">{item.icon}</span>
+                    {item.text}
+                  </div>
+                ))}
+              </div>
+
+              {/* CTA */}
+              <div className="hidden lg:flex gap-3">
+                <button
                   onClick={() => {
                     const el = document.getElementById("chat-container");
                     if (el) el.scrollIntoView({ behavior: "smooth" });
                   }}
-                  className="px-6 py-3 rounded-full bg-brand-orange hover:bg-brand-orange-light text-white font-medium shadow-lg shadow-brand-orange/20 transition-all active:scale-95">
-                  Démarrer le Chat
+                  className="px-7 py-3.5 rounded-full bg-brand-orange hover:bg-brand-orange-light text-white font-semibold shadow-xl shadow-brand-orange/30 transition-all active:scale-95 flex items-center gap-2 text-base"
+                >
+                  Parler à un technicien
+                  <ChevronRight size={18} />
                 </button>
+                <a
+                  href="tel:+33607877159"
+                  className="px-7 py-3.5 rounded-full border border-white/15 text-white hover:bg-white/5 transition-all text-sm font-medium flex items-center gap-2"
+                >
+                  <PhoneCall size={16} /> Appel direct
+                </a>
               </div>
             </motion.div>
           </div>
 
-          {/* Chatbot Container */}
-          <div id="chat-container" className="w-full lg:w-[480px] h-full flex flex-col justify-end min-h-0">
-            <motion.div 
+          {/* Chatbot — right side */}
+          <div id="chat-container" className="w-full lg:w-[480px] flex flex-col min-h-0 flex-1 lg:flex-none">
+            <motion.div
               className="h-full flex flex-col"
-              initial={{ opacity: 0, scale: 0.95 }}
+              initial={{ opacity: 0, scale: 0.97 }}
               animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.5, delay: 0.2 }}
+              transition={{ duration: 0.5, delay: 0.15 }}
             >
               <ChatBot />
             </motion.div>

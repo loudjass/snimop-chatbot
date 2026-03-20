@@ -262,6 +262,228 @@ export const smartSplitContact = (text: string): { name: string; phone: string; 
 };
 
 // ==========================================
+// V5.5 ROUTING — Pascal vs Alexandre
+// ==========================================
+
+export const ROUTING = {
+  PASCAL: {
+    name: "Pascal",
+    whatsapp: "33607877159",
+    email: "info@snimop.fr",
+    scope: "Pièces / Fourniture"
+  },
+  ALEXANDRE: {
+    name: "Alexandre",
+    whatsapp: "33640946757",            // +33 6 40 94 67 57
+    email: "ajanicot@snimop.fr",
+    scope: "Chantier / Intervention"
+  }
+} as const;
+
+/**
+ * v5.5 — Generates a mailto: link routed to the right contact.
+ */
+export const generateEmailLink = (data: ChatbotData, userMessages: string[]): string => {
+  const route = data.orientation === "ALEXANDRE" ? ROUTING.ALEXANDRE : ROUTING.PASCAL;
+  const subject = encodeURIComponent("Demande SNIMOP — " + (data.flowType === "devis" ? "Intervention" : "Pièce"));
+
+  const lines: string[] = [];
+  if (data.flowType === "devis") {
+    if (data.issueDescription) lines.push(`Problème : ${data.issueDescription}`);
+    if (data.urgency)          lines.push(`Urgence : ${data.urgency}`);
+    if (data.location)         lines.push(`Lieu : ${data.location}`);
+    if (data.equipmentType)    lines.push(`Équipement : ${data.equipmentType}`);
+  } else {
+    if (data.productType)  lines.push(`Pièce : ${data.productType}`);
+    if (data.reference)    lines.push(`Référence : ${data.reference}`);
+    if (data.dimensions)   lines.push(`Dimensions : ${data.dimensions}`);
+    if (data.quantity)     lines.push(`Quantité : ${data.quantity}`);
+    if (data.application)  lines.push(`Machine : ${data.application}`);
+  }
+
+  if (data.contactName)  lines.push(`\nContact : ${data.contactName}`);
+  if (data.contactPhone) lines.push(`Tél : ${data.contactPhone}`);
+  if (data.contactEmail) lines.push(`Email : ${data.contactEmail}`);
+  if (data.photoCount && data.photoCount > 0) lines.push(`\n📸 ${data.photoCount} photo(s) — joindre directement sur WhatsApp`);
+
+  const body = encodeURIComponent(lines.join("\n"));
+  return `mailto:${route.email}?subject=${subject}&body=${body}`;
+};
+
+/**
+ * v5.5 — Extracts structured info from a free-text sentence.
+ * Ex: "Mon rideau métallique est bloqué" → { equipmentType: "rideau métallique", issueDescription: "bloqué" }
+ */
+export const extractInfoFromSentence = (input: string): Partial<ChatbotData> => {
+  const norm = normalizeInput(input).toLowerCase();
+  const result: Partial<ChatbotData> = {};
+
+  // Equipment type extraction
+  const equipConf: [RegExp, string][] = [
+    [/rideau m[ée]tallique/, "rideau métallique"],
+    [/rideau\b/, "rideau"],
+    [/porte (automatique|coulissante|rapide|sectionnelle|basculante)/, "porte automatique"],
+    [/porte\b/, "porte"],
+    [/portail\b/, "portail"],
+    [/volet\b/, "volet"],
+    [/barrière\b/, "barrière"],
+    [/compresseur\b/, "compresseur"],
+    [/moteur\b/, "moteur"],
+    [/convoyeur\b/, "convoyeur"],
+    [/machine\b/, "machine"],
+  ];
+  for (const [re, label] of equipConf) {
+    if (re.test(norm)) { result.equipmentType = label; break; }
+  }
+
+  // Problem extraction
+  const problemConf: [RegExp, string][] = [
+    [/bloqu[eé]/, "bloqué"],
+    [/ne (s['']ouvre|monte|descend|ferme|démarre|fonctionne) plus/, "ne fonctionne plus"],
+    [/ne (marche|tourne) plus/, "ne fonctionne plus"],
+    [/en panne/, "en panne"],
+    [/bruit (anormal|fort|bizarre|grincement)/, "bruit anormal"],
+    [/fait du bruit/, "bruit anormal"],
+    [/cassé/, "cassé"],
+    [/déchiré/, "déchiré"],
+    [/usé/, "usé"],
+    [/patin[e]/, "patinage"],
+  ];
+  for (const [re, label] of problemConf) {
+    if (re.test(norm)) { result.issueDescription = label; result.symptoms = label; break; }
+  }
+
+  // Urgency keywords
+  if (/urgent|imm[ée]diat|arrêt|bloqu|production (arrêtée|stop)/.test(norm)) {
+    result.urgency = "Intervention immédiate";
+  }
+
+  return result;
+};
+
+/**
+ * v5.5 — Expert belt equivalence and type analysis.
+ */
+export interface BeltExpertResult {
+  beltType: "trapezoidale" | "dentee" | "poly-v" | "plate" | "speciale" | "auto" | "unknown";
+  equivalent?: string;
+  warning?: string;
+  message: string;
+}
+
+export const getBeltExpertAnalysis = (input: string): BeltExpertResult => {
+  const norm = normalizeInput(input).toLowerCase();
+  const inp = input.toUpperCase();
+
+  // Dentée / synchrone — NO equivalence
+  if (/HTD|XL\b|L\b|H\b|XH\b|T5\b|T10\b|AT5|AT10|3M|5M|8M|14M|synchro|crantée|dentée/i.test(input)) {
+    return {
+      beltType: "dentee",
+      message: "Courroie dentée — référence exacte obligatoire.\nPas d'équivalence possible (pas, nombre de dents, largeur sont critiques).\n_Envoyez une photo ou la référence complète._",
+      warning: "Aucune équivalence — référence exacte"
+    };
+  }
+
+  // Poly-V — same profile only
+  if (/PJ|PK|PL|PM|PH/i.test(input)) {
+    return {
+      beltType: "poly-v",
+      message: "Courroie Poly-V — équivalence uniquement dans le même profil.\nConversion PJ ↔ PK : interdit (géométrie incompatible).\n_Précisez le profil, la longueur et le nombre de nervures._",
+      warning: "Même profil uniquement"
+    };
+  }
+
+  // SPA / A equivalence
+  const spaMatch = inp.match(/SPA\s*(\d+)/);
+  if (spaMatch) {
+    const ld = parseInt(spaMatch[1]);
+    const liApprox = ld - 45;
+    const laApprox = ld + 18;
+    return {
+      beltType: "trapezoidale",
+      equivalent: `A ${liApprox}`,
+      message: `Courroie SPA ${ld}\n\n↔ Équivalent possible : **A ${liApprox}** (Li)\n\n⚠️ SPA et A sont proches mais non identiques. Conserver le profil d'origine sauf validation technique.\nLd ≈ ${ld} mm — Li ≈ ${liApprox} mm — La ≈ ${laApprox} mm\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      warning: "Profils proches, non identiques"
+    };
+  }
+
+  // SPB / B equivalence
+  const spbMatch = inp.match(/SPB\s*(\d+)/);
+  if (spbMatch) {
+    const ld = parseInt(spbMatch[1]);
+    const liApprox = ld - 45;
+    return {
+      beltType: "trapezoidale",
+      equivalent: `B ${liApprox}`,
+      message: `Courroie SPB ${ld}\n\n↔ Équivalent possible : **B ${liApprox}** (Li)\n\n⚠️ SPB et B sont proches mais non identiques. Conserver le profil d'origine sauf validation technique.\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      warning: "Profils proches, non identiques"
+    };
+  }
+
+  // SPC / C equivalence
+  const spcMatch = inp.match(/SPC\s*(\d+)/);
+  if (spcMatch) {
+    const ld = parseInt(spcMatch[1]);
+    const liApprox = ld - 45;
+    return {
+      beltType: "trapezoidale",
+      equivalent: `C ${liApprox}`,
+      message: `Courroie SPC ${ld}\n\n↔ Équivalent possible : **C ${liApprox}** (Li)\n\n⚠️ Conserver le profil d'origine sauf validation technique.\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      warning: "Profils proches, non identiques"
+    };
+  }
+
+  // SPZ / Z equivalence
+  const spzMatch = inp.match(/SPZ\s*(\d+)/);
+  if (spzMatch) {
+    const ld = parseInt(spzMatch[1]);
+    const liApprox = ld - 45;
+    return {
+      beltType: "trapezoidale",
+      equivalent: `Z ${liApprox}`,
+      message: `Courroie SPZ ${ld}\n\n↔ Équivalent possible : **Z ${liApprox}** (Li)\n\n⚠️ Conserver le profil d'origine sauf validation technique.`,
+      warning: "Profils proches, non identiques"
+    };
+  }
+
+  // A/B/C/Z → SPA/SPB/SPC/SPZ reverse
+  const classicMatch = inp.match(/\b([ABCZ])\s*(\d+)\b/);
+  if (classicMatch) {
+    const profile = classicMatch[1];
+    const li = parseInt(classicMatch[2]);
+    const spProfile = profile === "Z" ? "SPZ" : `SP${profile}`;
+    const ldApprox = li + 45;
+    return {
+      beltType: "trapezoidale",
+      equivalent: `${spProfile} ${ldApprox}`,
+      message: `Courroie ${profile} ${li}\n\n↔ Équivalent possible : **${spProfile} ${ldApprox}** (Ld)\n\n⚠️ Profils proches mais non identiques. Vérifier selon poulies.\n_Tolérance ±5 mm selon fabricant._`,
+      warning: "Profils proches, non identiques"
+    };
+  }
+
+  // Flat belt — ask for dimensions
+  if (/plate|flat|plat/i.test(input)) {
+    return {
+      beltType: "plate",
+      message: "Courroie plate — indiquez les dimensions :\n- Largeur (mm)\n- Épaisseur (mm)\n- Longueur (mm)\n\n_Une photo ou les dimensions précises permettent d'éviter une erreur._"
+    };
+  }
+
+  // Auto belts (brand equiv OK)
+  if (/auto|alternateur|distribution|accessoire/i.test(input)) {
+    return {
+      beltType: "auto",
+      message: "Courroie auto — équivalence par marque possible.\nDonnez la référence d'origine ou le véhicule + motorisation."
+    };
+  }
+
+  return {
+    beltType: "unknown",
+    message: "Pour trouver la bonne courroie, indiquez la **référence** ou les **dimensions** (largeur × hauteur × longueur).\n_Une photo permet d'éviter une erreur._"
+  };
+};
+
+// ==========================================
 // V3/V4 WHATSAPP FORMAT — 11 fields
 // ==========================================
 

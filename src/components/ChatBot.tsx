@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap, UserCheck, HardHat } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { analyzeBelt, analyzeBearing, analyzeGeneral, analyzeSymptoms, compareBelt, compareBeltReverse, normalizeInput, parseLocationUrgency, smartSplitContact, detectRequestType, isVagueInput, isNonTechnicalClient, buildCleanSummary, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
+import { analyzeBelt, analyzeBearing, analyzeGeneral, analyzeSymptoms, compareBelt, compareBeltReverse, normalizeInput, parseLocationUrgency, smartSplitContact, detectRequestType, isVagueInput, isNonTechnicalClient, buildCleanSummary, generateEmailLink, extractInfoFromSentence, ROUTING, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
 
 export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece" | "compare";
 
@@ -45,7 +45,7 @@ export default function ChatBot() {
   const initialMessage: Message = {
     id: "initial",
     sender: "bot",
-    text: "Bonjour ! Je suis l'assistant technique de SNIMOP. Comment puis-je vous aider aujourd'hui ?",
+    text: "Bonjour 👋 Je suis le technicien SNIMOP.\n\nComment puis-je vous aider ?",
     options: [
       { id: "courroie", label: "Identifier ma courroie", action: () => startFlow("courroie"), icon: <CircleDashed size={16} /> },
       { id: "compare", label: "Comparer / convertir ma courroie", action: () => startFlow("compare"), icon: <Settings size={16} /> },
@@ -220,8 +220,14 @@ export default function ChatBot() {
         ? `\n\n📸 **Pensez à joindre votre photo dans WhatsApp** après ouverture pour un traitement plus rapide.`
         : "";
 
-      addMessage("bot", `${summary}${photoNote}\n\nPrêt ? Envoyez-la directement via WhatsApp.`, [
-        { id: "whatsapp", label: "Envoyer par WhatsApp 📲", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> },
+      // v5.5: dynamic routing label
+      const route = finalData.orientation === "ALEXANDRE" ? ROUTING.ALEXANDRE : ROUTING.PASCAL;
+      const waUrl = finalData.whatsAppUrl || "";
+      const emailUrl = generateEmailLink(finalData, uMsgs);
+
+      addMessage("bot", `${summary}${photoNote}\n\nPrêt ? Envoyez cette demande.`, [
+        { id: "whatsapp", label: `WhatsApp ${route.name} 📲`, action: () => window.open(waUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> },
+        { id: "email",    label: `Email → ${route.email}`,         action: () => window.open(emailUrl, "_blank"), icon: <FileText size={16} className="text-brand-blue" /> },
         { id: "callback", label: "Demander à être rappelé", action: () => {
           addMessage("user", "Je souhaite être rappelé");
           setTimeout(() => addMessage("bot", "Quel est le meilleur moment pour vous rappeler ?\n_(ex : ce matin, cet après-midi, demain matin)_"), 500);
@@ -485,11 +491,37 @@ export default function ChatBot() {
             return;
           }
 
+          // v5.5: extract structured info from full sentence FIRST
+          const extracted = extractInfoFromSentence(input);
+          if (Object.keys(extracted).length > 0) {
+            setRequestData(prev => ({ ...prev, ...extracted }));
+          }
+
           // v5: auto-detect PIECE vs INTERVENTION
           const reqType = detectRequestType(normInput);
 
           if (reqType === "INTERVENTION") {
-            // v5: offer devis vs renseignement FIRST
+            // v5.5: if we already extracted equipment + problem, go direct
+            if (extracted.equipmentType && extracted.issueDescription) {
+              setCurrentFlow("devis");
+              setRequestData(prev => ({ ...prev, flowType: "devis", orientation: "ALEXANDRE", ...extracted }));
+              addTag("DEVIS"); addTag("ALEXANDRE");
+              if (extracted.urgency) {
+                // urgency already known: skip to location
+                addMessage("bot", `Compris — **${extracted.equipmentType}** ${extracted.issueDescription}.\n\nC'est urgent ?\n_(on vient aujourd'hui si besoin)_`, [
+                  { id: "yes", label: "Oui, urgent", action: () => { addMessage("user", "Oui, urgent"); setRequestData(prev => ({ ...prev, urgency: "Intervention immédiate" })); addTag("URGENT"); setStep(3); setTimeout(() => addMessage("bot", "Où se trouve le site ?"), 400); }, icon: <Zap size={16} className="text-red-500" /> },
+                  { id: "no", label: "Non, planifiable", action: () => { addMessage("user", "Non, planifiable"); setRequestData(prev => ({ ...prev, urgency: "Planifiable" })); setStep(3); setTimeout(() => addMessage("bot", "Où se trouve le site ?"), 400); }, icon: <ChevronRight size={16} /> }
+                ]);
+              } else {
+                addMessage("bot", `Compris — **${extracted.equipmentType}** ${extracted.issueDescription}.\n\nC'est urgent ou ça peut attendre ?`, [
+                  { id: "yes", label: "Oui, urgent", action: () => { addMessage("user", "Oui, urgent"); setRequestData(prev => ({ ...prev, urgency: "Intervention immédiate" })); addTag("URGENT"); setStep(3); setTimeout(() => addMessage("bot", "Où se trouve le site ?"), 400); }, icon: <Zap size={16} className="text-red-500" /> },
+                  { id: "no", label: "Non, ça peut attendre", action: () => { addMessage("user", "Ça peut attendre"); setRequestData(prev => ({ ...prev, urgency: "Planifiable" })); setStep(3); setTimeout(() => addMessage("bot", "Où se trouve le site ?"), 400); }, icon: <ChevronRight size={16} /> }
+                ]);
+              }
+              return;
+            }
+
+            // v5: otherwise offer devis vs renseignement
             setRequestData(prev => ({ ...prev, issueDescription: normInput }));
             addMessage("bot", "Souhaitez-vous :", [
               { id: "devis_interv", label: "🛠 Un devis d'intervention (on envoie quelqu'un)", action: () => {
@@ -502,7 +534,7 @@ export default function ChatBot() {
               { id: "renseign", label: "💡 Juste un renseignement", action: () => {
                 addMessage("user", "Renseignement technique");
                 addTag("TECHNIQUE");
-                setTimeout(() => addMessage("bot", "Bien sûr. Qu'est-ce qui se passe exactement avec cet équipement ?"), 500);
+                setTimeout(() => addMessage("bot", "Qu'est-ce qui se passe exactement ?"), 500);
               }, icon: <Search size={16} className="text-brand-blue" /> }
             ]);
             return;
@@ -705,16 +737,31 @@ export default function ChatBot() {
 
   return (
     <div className="bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[85vh] md:h-[650px] w-full rounded-2xl md:rounded-3xl overflow-hidden">
-      {/* Chat Header */}
-      <div className="px-5 py-4 bg-gradient-to-r from-brand-blue to-brand-blue-light text-white flex items-center justify-between z-10 shadow-sm shrink-0">
+      {/* Chat Header — v10.2 with SNIMOP logo */}
+      <div className="px-4 py-3 bg-gradient-to-r from-brand-blue to-brand-blue-light text-white flex items-center justify-between z-10 shadow-sm shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm shrink-0">
-            <Bot size={22} className="text-white" />
+          {/* Mascotte avatar small */}
+          <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-white/30 shrink-0">
+            <img
+              src="/mascotte.jpg"
+              alt="Technicien SNIMOP"
+              className="w-full h-full object-cover"
+              style={{ objectPosition: "50% 12%" }}
+            />
           </div>
           <div>
-            <h3 className="font-semibold text-lg leading-tight">Assistant Tech SNIMOP</h3>
+            {/* SNIMOP logo inline */}
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-base leading-tight">Assistant Tech</span>
+              <img
+                src="/snimop-logo.jpg"
+                alt="SNIMOP"
+                className="h-6 w-auto object-contain rounded-sm bg-white px-1"
+                style={{ maxWidth: 72 }}
+              />
+            </div>
             <p className="text-blue-100 text-xs flex items-center gap-1 mt-0.5">
-              <span className="w-2 h-2 rounded-full bg-green-400"></span> En ligne
+              <span className="w-2 h-2 rounded-full bg-green-400 inline-block" /> En ligne
             </p>
           </div>
         </div>
@@ -727,11 +774,11 @@ export default function ChatBot() {
           )}
           {(currentFlow === "courroie" || currentFlow === "roulement" || currentFlow === "piece" || currentFlow === "compare") && (
             <span className="text-xs bg-blue-400/30 text-blue-100 px-2 py-1 rounded-full flex items-center gap-1 shrink-0">
-              <UserCheck size={12} /> Pascale
+              <UserCheck size={12} /> Pascal
             </span>
           )}
           {currentFlow !== "home" && (
-            <button 
+            <button
               onClick={resetFlow}
               className="text-white/80 hover:text-white transition-colors flex items-center gap-1 text-xs md:text-sm bg-black/10 px-3 py-2 rounded-full hover:bg-black/20 shrink-0 min-h-[44px]"
             >
@@ -753,12 +800,22 @@ export default function ChatBot() {
               className={cn("flex gap-3", message.sender === "user" ? "flex-row-reverse" : "")}
             >
               <div className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center shrink-0",
-                message.sender === "bot" 
-                  ? "bg-brand-blue/10 text-brand-blue dark:bg-brand-blue/20" 
-                  : "bg-brand-orange text-white"
+                "w-9 h-9 rounded-full flex items-center justify-center shrink-0 overflow-hidden",
+                message.sender === "user"
+                  ? "bg-brand-orange"
+                  : "border-2 border-brand-blue/20"
               )}>
-                {message.sender === "bot" ? <Bot size={16} /> : <User size={16} />}
+                {message.sender === "bot" ? (
+                  // v5.5: Original SNIMOP mascotte as avatar
+                  <img
+                    src="/mascotte.jpg"
+                    alt="Technicien SNIMOP"
+                    className="w-full h-full object-cover object-top"
+                    style={{ objectPosition: "50% 12%" }}
+                  />
+                ) : (
+                  <User size={16} className="text-white" />
+                )}
               </div>
               
               <div className={cn(
@@ -901,21 +958,32 @@ export default function ChatBot() {
 
       {/* Input Area */}
       <div className="p-3 md:p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 shrink-0">
-        {/* v5.2: Fast-exit quick send bar */}
-        {currentFlow !== "home" && step === 1 && (
-          <div className="mb-2 flex items-center gap-2">
+        {/* v5.5: Persistent quick-action bar — always visible */}
+        <div className="mb-2 flex items-center gap-2 flex-wrap">
+          {/* Fast-exit: leave your number */}
+          {currentFlow !== "home" && step >= 1 && (
             <button
               type="button"
               onClick={() => {
-                addMessage("bot", "Pas de problème. Laissez-moi votre numéro et on vous rappelle rapidement.");
+                addMessage("bot", "Pas de problème. Laissez votre numéro et on vous rappelle.");
                 setAwaitingField("phone");
               }}
               className="text-xs text-slate-500 dark:text-slate-400 hover:text-brand-blue transition-colors flex items-center gap-1 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700"
             >
-              <PhoneCall size={12} /> Aller plus vite ? Laissez votre numéro
+              <PhoneCall size={12} /> Rappel rapide
             </button>
-          </div>
-        )}
+          )}
+          {/* v5.5: Permanent Devis shortcut button */}
+          {currentFlow === "home" && (
+            <button
+              type="button"
+              onClick={() => startFlow("devis")}
+              className="text-xs text-slate-500 dark:text-slate-400 hover:text-white hover:bg-brand-blue transition-colors flex items-center gap-1 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800"
+            >
+              <FileText size={12} /> 🧧 Devis intervention
+            </button>
+          )}
+        </div>
 
         <form onSubmit={handleSubmit} className="flex gap-2 relative items-center">
           {/* v5.2: Real photo input with FileReader */}
