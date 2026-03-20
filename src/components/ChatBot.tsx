@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bot, Search, FileText, Wrench, PhoneCall, ChevronRight, User, Send, ArrowLeft, Camera, Settings, CircleDashed, Zap, UserCheck, HardHat } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { analyzeBelt, analyzeBearing, analyzeGeneral, analyzeSymptoms, compareBelt, compareBeltReverse, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
+import { analyzeBelt, analyzeBearing, analyzeGeneral, analyzeSymptoms, compareBelt, compareBeltReverse, normalizeInput, parseLocationUrgency, smartSplitContact, detectRequestType, isVagueInput, isNonTechnicalClient, buildCleanSummary, ChatbotData, RequestTag, saveRequest, generateWhatsAppLink, calculateCompletionScore } from "@/lib/chatbot-logic";
 
 export type FlowCategory = "home" | "courroie" | "roulement" | "inconnu" | "devis" | "piece" | "compare";
 
@@ -14,6 +14,7 @@ interface Message {
   text: string;
   options?: { id: string; label: string; action: () => void; icon?: React.ReactNode }[];
   isCustomUI?: "comparator";
+  photoDataUrl?: string; // v5.2: inline photo preview
 }
 
 export default function ChatBot() {
@@ -26,6 +27,10 @@ export default function ChatBot() {
   
   // Accumulated context across all user turns
   const [accumulatedContext, setAccumulatedContext] = useState<string>("");
+  
+  // v5.2: Photo file input ref for real file capture
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [photoDataUrls, setPhotoDataUrls] = useState<string[]>([]);
   
   // Belt Comparator State
   const [compMode, setCompMode] = useState<"classic"|"reverse">("classic");
@@ -67,8 +72,8 @@ export default function ChatBot() {
     messagesRef.current = messages;
   }, [messages]);
 
-  const addMessage = (sender: "bot" | "user", text: string, options?: Message["options"], isCustomUI?: "comparator") => {
-    setMessages(prev => [...prev, { id: Date.now().toString() + Math.random(), sender, text, options, isCustomUI }]);
+  const addMessage = (sender: "bot" | "user", text: string, options?: Message["options"], isCustomUI?: "comparator", photoDataUrl?: string) => {
+    setMessages(prev => [...prev, { id: Date.now().toString() + Math.random(), sender, text, options, isCustomUI, photoDataUrl }]);
   };
 
   const addTag = (tag: RequestTag) => {
@@ -106,11 +111,13 @@ export default function ChatBot() {
         nextText = "Parfait. Connaissez-vous les dimensions du roulement (diamètre interne × externe × épaisseur) ou avez-vous une référence inscrite dessus ?";
       } else if (flowId === "inconnu") {
         addTag("HORS_STANDARD");
-        nextText = "Pas de problème, guider nos clients est notre métier.\n\nPouvez-vous me décrire la pièce ou son utilité ? Est-ce qu'elle tourne ? Y a-t-il un bruit ou un échauffement ?";
+        nextText = "Pas de problème. Décrivez la pièce ou dites-moi ce qu'elle fait. Est-ce qu'elle tourne ? Y a-t-il un bruit ?";
       } else if (flowId === "devis") {
         addTag("DEVIS");
         addTag("ALEXANDRE");
-        nextText = "Bien sûr, nous pouvons intervenir.\n\nPour commencer : quel est le type d'équipement concerné ? (porte, rideau, volet, machine, compresseur...)";
+        // v5.3: start with the problem, not equipment
+        setRequestData(prev => ({ ...prev, orientation: "ALEXANDRE" }));
+        nextText = "Quel est le problème ? (ex : porte bloquée, rideau qui ne remonte plus, moteur en panne...)";
       } else if (flowId === "piece") {
         addTag("PIECE");
         addTag("PASCALE");
@@ -131,24 +138,43 @@ export default function ChatBot() {
       {
         id: Date.now().toString(),
         sender: "bot",
-        text: "Comment puis-je vous aider d'autre ?",
+        text: "Comment puis-je vous aider ?",
         options: initialMessage.options
       }
     ]);
   };
 
-  const handlePhotoUpload = () => {
-    addMessage("user", "[Photo envoyée 📷]");
-    setRequestData(prev => ({ ...prev, hasPhoto: true }));
-    
-    setTimeout(() => {
-      addMessage("bot", "Merci pour la photo, elle a bien été ajoutée à votre dossier d'analyse.");
-      advanceFlow("[Photo]");
-    }, 1000);
-  };
+  // v5.2: Real photo handler — uses FileReader to store base64
+  const handlePhotoUpload = useCallback((file?: File) => {
+    const processFile = (f: File) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        setPhotoDataUrls(prev => [...prev, dataUrl]);
+        setRequestData(prev => ({
+          ...prev,
+          hasPhoto: true,
+          photoCount: (prev.photoCount || 0) + 1,
+          photoDataUrls: [...(prev.photoDataUrls || []), dataUrl]
+        }));
+        addMessage("user", "📷 Photo envoyée", undefined, undefined, dataUrl);
+        setTimeout(() => advanceFlow("[Photo]"), 600);
+      };
+      reader.readAsDataURL(f);
+    };
+
+    if (file) {
+      processFile(file);
+    } else if (photoInputRef.current?.files?.[0]) {
+      processFile(photoInputRef.current.files[0]);
+      // Reset so same file can be re-selected
+      photoInputRef.current.value = "";
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFastMode = () => {
-    addMessage("user", "Je n'ai pas toutes les informations");
+    addMessage("user", "Je n'ai pas les infos précises");
     advanceFlow("[FAST_MODE]");
   };
 
@@ -158,45 +184,9 @@ export default function ChatBot() {
   };
 
   // ==========================================
-  // CONTACT EXTRACTION — v3 smart parser
+  // CONTACT EXTRACTION — v4 uses smartSplitContact from lib
   // ==========================================
-  const extractContacts = (text: string): { name: string; phone: string; company: string; email: string } => {
-    let extracted = { name: "", phone: "", company: "", email: "" };
-
-    // Email
-    const emailMatch = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
-    if (emailMatch) extracted.email = emailMatch[0];
-
-    // Phone (French)
-    const phoneMatch = text.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
-    if (phoneMatch) extracted.phone = phoneMatch[0];
-
-    const withoutContactData = text.replace(extracted.email, "").replace(extracted.phone, "").trim();
-    const lines = withoutContactData.split('\n');
-
-    if (lines.length > 1) {
-       lines.forEach(l => {
-          const lLow = l.toLowerCase();
-          if (lLow.includes("nom") || lLow.includes("prénom") || lLow.includes("prenom")) extracted.name = l.split(":")[1]?.trim() || "";
-          if (lLow.includes("société") || lLow.includes("societe") || lLow.includes("entreprise")) extracted.company = l.split(":")[1]?.trim() || "";
-          if (lLow.includes("tel") || lLow.includes("téléphone")) extracted.phone = l.split(":")[1]?.trim() || extracted.phone;
-          if (lLow.includes("mail") || lLow.includes("email")) extracted.email = l.split(":")[1]?.trim() || extracted.email;
-       });
-    } else {
-       // Single line: extract company (ALL CAPS word) and name (rest)
-       const words = withoutContactData.split(" ").filter(w => w.length > 0);
-       const potentialCompanyIndex = words.findIndex(w => w === w.toUpperCase() && w.length > 2 && /^[A-Z]/.test(w));
-       if (potentialCompanyIndex !== -1) {
-          extracted.company = words[potentialCompanyIndex];
-          words.splice(potentialCompanyIndex, 1);
-       } else if (words.length > 2) {
-          extracted.company = words.pop() || "";
-       }
-       extracted.name = words.join(" ");
-    }
-
-    return extracted;
-  };
+  const extractContacts = (text: string) => smartSplitContact(text);
 
   // ==========================================
   // ORIENTATION LABEL
@@ -209,7 +199,7 @@ export default function ChatBot() {
   };
 
   // ==========================================
-  // FINALIZE REQUEST
+  // FINALIZE REQUEST — v5 clean summary + v5.2 callback + v5.3 photo note
   // ==========================================
   const finalizeRequest = (extraData?: Partial<ChatbotData>) => {
     setTimeout(() => {
@@ -217,13 +207,25 @@ export default function ChatBot() {
       const mergedData = { ...requestData, ...extraData };
       const finalData = {
          ...mergedData,
+         photoDataUrls,
+         photoCount: photoDataUrls.length || (mergedData.hasPhoto ? 1 : 0),
          completionScore: calculateCompletionScore(mergedData, uMsgs),
-         whatsAppUrl: generateWhatsAppLink(mergedData, uMsgs)
+         whatsAppUrl: generateWhatsAppLink({ ...mergedData, photoCount: photoDataUrls.length }, uMsgs)
       };
 
-      const orientMsg = getOrientationMessage(finalData);
-      addMessage("bot", `Parfait, votre demande est prête.${orientMsg}\n\nVous pouvez l'envoyer directement via WhatsApp ci-dessous.`, [
-        { id: "whatsapp", label: "Envoyer ma demande par WhatsApp", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> }
+      const summary = buildCleanSummary(finalData);
+      
+      // v5.3: add photo note if client uploaded photos
+      const photoNote = photoDataUrls.length > 0
+        ? `\n\n📸 **Pensez à joindre votre photo dans WhatsApp** après ouverture pour un traitement plus rapide.`
+        : "";
+
+      addMessage("bot", `${summary}${photoNote}\n\nPrêt ? Envoyez-la directement via WhatsApp.`, [
+        { id: "whatsapp", label: "Envoyer par WhatsApp 📲", action: () => window.open(finalData.whatsAppUrl, "_blank"), icon: <PhoneCall size={16} className="text-green-500" /> },
+        { id: "callback", label: "Demander à être rappelé", action: () => {
+          addMessage("user", "Je souhaite être rappelé");
+          setTimeout(() => addMessage("bot", "Quel est le meilleur moment pour vous rappeler ?\n_(ex : ce matin, cet après-midi, demain matin)_"), 500);
+        }, icon: <PhoneCall size={16} className="text-brand-blue" /> }
       ]);
       
       saveRequest(finalData);
@@ -268,76 +270,107 @@ export default function ChatBot() {
       // ---- CASCADE FOLLOW-UP ----
       if (cascadePending) {
         setCascadePending(false);
+
+        // v5: no filler — go directly to next question
         if (input === "[FAST_MODE]" || input === "[FORCE_SEND]") {
-           addMessage("bot", "C'est noté. Votre demande sera transmise avec les éléments déjà disponibles.");
-        } else if (input.length < 5 && !requestData.hasPhoto && !input.includes("Photo")) {
-           addMessage("bot", "C'est noté. Si vous n'avez pas toutes les données, notre équipe reviendra vers vous.");
-        } else {
-           addMessage("bot", `Bien noté — ${input.length < 20 ? `"${input}"` : "merci pour cette précision"}.`);
+          // fall through to contact collection
+        } else if (input.startsWith("[Photo]")) {
+          // photo received — continue asking next question
         }
-        
+
         setTimeout(() => {
-          // For technical flows, ask for quantity/application then coords
-          if (currentFlow === "courroie" || currentFlow === "roulement" || currentFlow === "inconnu" || currentFlow === "piece") {
-             addMessage("bot", "Quelle quantité vous faut-il et sur quelle machine ou équipement est-elle montée ?");
-             setStep(current + 1);
+          const isIntervention = requestData.orientation === "ALEXANDRE" || requestData.tags?.includes("ALEXANDRE");
+          if (isIntervention) {
+            // v5 fix: NEVER ask quantity for interventions
+            addMessage("bot", "Où se trouve le site d'intervention ?");
+          } else if (currentFlow === "courroie" || currentFlow === "roulement" || currentFlow === "inconnu" || currentFlow === "piece") {
+            addMessage("bot", "Sur quelle machine ou équipement est-elle montée ?");
           } else {
-             // devis — fall through to coord collection
-             addMessage("bot", "Merci pour ces précisions.\n\nPour finaliser votre demande, pourriez-vous indiquer votre nom, société et numéro de téléphone ?");
-             setStep(current + 1);
+            addMessage("bot", "Où se trouve le site ?");
           }
-        }, 800);
+          setStep(current + 1);
+        }, 500);
         return;
       }
 
       setStep(current + 1);
 
       // ==========================================
-      // COURROIE FLOW
+      // COURROIE FLOW — v5
       // ==========================================
       if (currentFlow === "courroie") {
         if (current === 1) {
-          const analysis = analyzeBelt(input);
+          const normInput = normalizeInput(input);
+
+          // v5: vague or non-tech detection
+          if (isVagueInput(input)) {
+            addMessage("bot", "Pouvez-vous préciser le problème ?\n_(ex : courroie cassée, qui patine, qui saute, usure...)_");
+            setStep(current); // don't advance
+            return;
+          }
+          if (isNonTechnicalClient(input)) {
+            addMessage("bot", "Pas de problème. La courroie est la bande qui tourne autour des poulies sur votre machine.\n\nAvez-vous une référence inscrite dessus ? (ex: SPA 1250, 17×1320...)\n_Sinon, une photo suffit._", [
+              { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+            ]);
+            return;
+          }
+
+          const analysis = analyzeBelt(normInput);
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
             setRequestData(prev => ({ ...prev, aiAnalysis: analysis.message, orientation: "PASCALE" }));
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
-                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
-                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+                 { id: "fastmode", label: "Je n'ai pas les infos précises", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "photo", label: "Envoyer une photo", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
                ]);
             } else {
                addMessage("bot", analysis.message);
-               setTimeout(() => addMessage("bot", "Quelle quantité vous faut-il et sur quelle machine est-elle montée ?"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité vous en faut-il ?"), 500);
             }
           } else {
-            addMessage("bot", "Je n'ai pas pu identifier la courroie avec ces éléments. Notre équipe technique analysera les données.\n\nQuelle quantité vous faut-il et sur quelle machine est-elle montée ?");
+            addMessage("bot", "Référence non trouvée. Avez-vous la **largeur** de la courroie ou son **périmètre** ?\n_Sinon, une photo aide beaucoup._", [
+              { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+            ]);
           }
         } else if (current === 2) {
-           setRequestData(prev => ({ ...prev, application: input }));
-           addMessage("bot", "Presque terminé !\n\nMerci d'indiquer votre nom, société et numéro de téléphone :");
+           setRequestData(prev => ({ ...prev, quantity: input }));
+           addMessage("bot", "Sur quelle machine est-elle montée ?");
         } else if (current === 3) {
-           const contacts = extractContacts(input);
+           setRequestData(prev => ({ ...prev, application: input }));
+           addMessage("bot", "Votre nom et numéro de téléphone ?");
+        } else if (current === 4) {
+           const contacts = smartSplitContact(input);
            setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
              setAwaitingField("phone");
-             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
+             addMessage("bot", "Numéro de téléphone ? (ex: 06 12 34 56 78)");
              return;
            }
            setAwaitingField("email");
-           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi de demande ?");
+           addMessage("bot", "Email ? (optionnel, pour recevoir le devis)");
         }
       } 
       
       // ==========================================
-      // ROULEMENT FLOW
+      // ROULEMENT FLOW — v5
       // ==========================================
       else if (currentFlow === "roulement") {
         if (current === 1) {
-          const fullCtx = accumulatedContext + " " + input;
+          const normInput = normalizeInput(input);
+
+          // v5: non-tech detection
+          if (isNonTechnicalClient(input)) {
+            addMessage("bot", "Un roulement c'est la pièce ronde avec des billes ou des rouleaux dedans, montée sur un axe.\n\nAvez-vous une référence gravée dessus ? (ex: 6205, UC204...)\n_Sinon, une photo suffit._", [
+              { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+            ]);
+            return;
+          }
+
+          const fullCtx = accumulatedContext + " " + normInput;
           let analysis = analyzeBearing(fullCtx);
-          if (!analysis.matches) analysis = analyzeBearing(input);
+          if (!analysis.matches) analysis = analyzeBearing(normInput);
 
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
@@ -345,90 +378,169 @@ export default function ChatBot() {
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
-                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
-                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+                 { id: "fastmode", label: "Je n'ai pas les infos précises", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "photo", label: "Envoyer une photo", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
                ]);
             } else {
                addMessage("bot", analysis.message);
-               setTimeout(() => addMessage("bot", "Quelle est l'application ou la machine de destination ?"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité vous en faut-il ?"), 500);
             }
           } else {
-            addMessage("bot", "C'est noté. Notre équipe cherchera la correspondance exacte.\n\nQuelle est la machine ou l'application de destination ?");
+            addMessage("bot", "Référence non reconnue.\n\nAvez-vous les dimensions : **Ø intérieur × Ø extérieur × épaisseur** ? (ex : 25 × 52 × 15)\n_Sinon, une photo de la bague aide._", [
+              { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+            ]);
           }
         } else if (current === 2) {
-          setRequestData(prev => ({ ...prev, application: input }));
-          addMessage("bot", "Merci.\n\nPour finaliser, merci d'indiquer votre nom, société et numéro de téléphone :");
+          setRequestData(prev => ({ ...prev, quantity: input }));
+          addMessage("bot", "Sur quelle machine est-il monté ?");
         } else if (current === 3) {
-           const contacts = extractContacts(input);
+          setRequestData(prev => ({ ...prev, application: input }));
+          addMessage("bot", "Votre nom et numéro de téléphone ?");
+        } else if (current === 4) {
+           const contacts = smartSplitContact(input);
            setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
              setAwaitingField("phone");
-             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
+             addMessage("bot", "Numéro de téléphone ? (ex: 06 12 34 56 78)");
              return;
            }
            setAwaitingField("email");
-           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi ?");
+           addMessage("bot", "Email ? (optionnel)");
         }
       }
 
       // ==========================================
-      // DEVIS / INTERVENTION FLOW — 4 turns
+      // DEVIS / INTERVENTION FLOW — v5.3 reordered : problem → urgency → location → equipment → contacts
       // ==========================================
       else if (currentFlow === "devis") {
         if (current === 1) {
-          // Turn 1: Equipment type
-          setRequestData(prev => ({ ...prev, equipmentType: input, orientation: "ALEXANDRE" }));
-          addTag("ALEXANDRE");
-
-          // Detect urgency keywords
-          const isUrgent = /urgent|arrêt|bloqué|bloquée|sécurité|production|immédiat/i.test(input);
-          if (isUrgent) {
-            addTag("URGENT");
+          // Turn 1: What is the problem?
+          if (isVagueInput(input)) {
+            addMessage("bot", "Pouvez-vous préciser ?\n_(ex : ne s'ouvre plus, bruit, blocage, télécommande morte...)_");
+            setStep(current);
+            return;
           }
-
-          addMessage("bot", `Bien noté — **${input}**.\n\nPouvez-vous me décrire le problème rencontré et les symptômes observés ? (bruit, blocage, panne électrique, déformation...)`);
+          const normIssue = normalizeInput(input);
+          setRequestData(prev => ({ ...prev, issueDescription: normIssue, symptoms: normIssue, orientation: "ALEXANDRE" }));
+          addTag("ALEXANDRE");
+          if (/urgent|arrêt|bloqué|bloquée|sécurité|immédiat/i.test(input)) {
+            addTag("URGENT");
+            // Already urgent — skip urgency turn
+            setRequestData(prev => ({ ...prev, urgency: "Intervention immédiate" }));
+            addMessage("bot", "Où se trouve le site ?");
+            setStep(current + 2); // skip turn 2 (urgency already known)
+            return;
+          }
+          addMessage("bot", "C'est urgent ? Ou pouvons-nous planifier ?");
         } else if (current === 2) {
-          // Turn 2: Problem + symptoms
-          setRequestData(prev => ({ ...prev, issueDescription: input, symptoms: input }));
-
-          // Detect urgency in symptoms too
-          const isUrgent = /urgent|arrêt|bloqué|bloquée|sécurité|production|immédiat/i.test(input);
-          if (isUrgent) addTag("URGENT");
-
-          addMessage("bot", "Compris. Quelle est la localisation du site et quel est le niveau d'urgence ?\n_(ex: Paris 19e — urgence normale / demi-journée / intervention immédiate)_");
+          // Turn 2: Urgency
+          const urgency = normalizeInput(input);
+          setRequestData(prev => ({ ...prev, urgency }));
+          if (/immédiat|urgent|stop|arrêt|bloqu/i.test(input)) addTag("URGENT");
+          addMessage("bot", "Où se trouve le site ?");
         } else if (current === 3) {
-          // Turn 3: Location + urgency
-          const urgencyKeywords = /immédiat|urgent|critique|bloqué|production arrêtée/i;
-          const isUrgent = urgencyKeywords.test(input);
-          if (isUrgent) addTag("URGENT");
-          setRequestData(prev => ({ ...prev, location: input, urgency: input }));
-
-          addMessage("bot", "Parfait. Pour que notre équipe puisse vous recontacter avec une proposition :\n\nMerci d'indiquer votre nom, société et numéro de téléphone :");
+          // Turn 3: Location
+          const parsed = parseLocationUrgency(input);
+          setRequestData(prev => ({ ...prev, location: parsed.location || input }));
+          addMessage("bot", "Quel type d'équipement ? (porte, rideau, volet, machine...)");
         } else if (current === 4) {
-          // Turn 4: Contact collection
-          const contacts = extractContacts(input);
+          // Turn 4: Equipment type
+          const normEquipment = normalizeInput(input);
+          setRequestData(prev => ({ ...prev, equipmentType: normEquipment }));
+          addMessage("bot", "Votre nom et téléphone ?");
+        } else if (current === 5) {
+          // Turn 5: Contact
+          const contacts = smartSplitContact(input);
           setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
           if (!contacts.phone) {
             setAwaitingField("phone");
-            addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
+            addMessage("bot", "Numéro de téléphone ? (ex: 06 12 34 56 78)");
             return;
           }
           setAwaitingField("email");
-          addMessage("bot", "Mémorisé. Et votre adresse e-mail pour recevoir la confirmation de devis ?");
+          addMessage("bot", "Email ? (pour la confirmation)");
         }
       }
 
       // ==========================================
-      // INCONNU / PIECE FLOW — smart guided questions
+      // INCONNU / PIECE FLOW — v5 smart routing
       // ==========================================
       else if (currentFlow === "inconnu" || currentFlow === "piece") {
         if (current === 1) {
-          const fullCtx = input;
+          const normInput = normalizeInput(input);
 
-          // Try belt first
-          let analysis = analyzeBelt(fullCtx);
-          if (!analysis.matches) analysis = analyzeBearing(fullCtx);
-          if (!analysis.matches) analysis = analyzeGeneral(fullCtx);
+          // v5: non-technical client mode
+          if (isNonTechnicalClient(input)) {
+            addMessage("bot", "Pas de souci, on va trouver ensemble.\n\nEst-ce que la pièce **tourne** ? (ex : roue, axe, tambour, ventilateur)", [
+              { id: "photo", label: "Je préfère envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+            ]);
+            setCascadePending(true);
+            return;
+          }
+
+          // v5: vague input → ask for clarification
+          if (isVagueInput(input)) {
+            addMessage("bot", "Pouvez-vous préciser un peu ?\n_(ex : ne s'ouvre plus, fait du bruit, tourne mal, est bloqué...)_");
+            setStep(current); // don't advance
+            return;
+          }
+
+          // v5: auto-detect PIECE vs INTERVENTION
+          const reqType = detectRequestType(normInput);
+
+          if (reqType === "INTERVENTION") {
+            // v5: offer devis vs renseignement FIRST
+            setRequestData(prev => ({ ...prev, issueDescription: normInput }));
+            addMessage("bot", "Souhaitez-vous :", [
+              { id: "devis_interv", label: "🛠 Un devis d'intervention (on envoie quelqu'un)", action: () => {
+                addMessage("user", "Devis d'intervention");
+                setCurrentFlow("devis");
+                setRequestData(prev => ({ ...prev, flowType: "devis", orientation: "ALEXANDRE", equipmentType: normInput }));
+                addTag("DEVIS"); addTag("ALEXANDRE");
+                setTimeout(() => addMessage("bot", "Quel est le problème exactement ?"), 500);
+              }, icon: <HardHat size={16} className="text-brand-orange" /> },
+              { id: "renseign", label: "💡 Juste un renseignement", action: () => {
+                addMessage("user", "Renseignement technique");
+                addTag("TECHNIQUE");
+                setTimeout(() => addMessage("bot", "Bien sûr. Qu'est-ce qui se passe exactement avec cet équipement ?"), 500);
+              }, icon: <Search size={16} className="text-brand-blue" /> }
+            ]);
+            return;
+          }
+
+          // v5 priority: run symptom engine FIRST (roulement before courroie for bruit+rotation)
+          const symptomsFirst = analyzeSymptoms(accumulatedContext + " " + normInput);
+          if (symptomsFirst.suggestedType === "ROULEMENT" && symptomsFirst.confidence !== "LOW") {
+            const bearingAnalysis = analyzeBearing(normInput);
+            if (bearingAnalysis.matches) {
+              bearingAnalysis.tags.forEach(addTag);
+              setRequestData(prev => ({ ...prev, aiAnalysis: bearingAnalysis.message, productType: bearingAnalysis.detectedType, orientation: "PASCALE" }));
+              if (bearingAnalysis.needsCascade) {
+                 setCascadePending(true);
+                 addMessage("bot", bearingAnalysis.message, [
+                   { id: "fastmode", label: "Je n'ai pas les infos précises", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                   { id: "photo", label: "Envoyer une photo", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+                 ]);
+              } else {
+                 addMessage("bot", bearingAnalysis.message);
+                 setTimeout(() => addMessage("bot", "Quelle quantité vous en faut-il ?"), 500);
+              }
+              return;
+            } else {
+              addTag("ROULEMENT"); addTag("PASCALE");
+              setRequestData(prev => ({ ...prev, orientation: "PASCALE" }));
+              addMessage("bot", `${symptomsFirst.hypothesis}\n\n${symptomsFirst.nextQuestion}\n_Ou envoyez une photo si plus simple._`, [
+                { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+              ]);
+              setCascadePending(true);
+              return;
+            }
+          }
+
+          // Standard analysis: belt > bearing > general
+          let analysis = analyzeBelt(normInput);
+          if (!analysis.matches) analysis = analyzeBearing(normInput);
+          if (!analysis.matches) analysis = analyzeGeneral(normInput);
 
           if (analysis.matches) {
             analysis.tags.forEach(addTag);
@@ -436,37 +548,59 @@ export default function ChatBot() {
             if (analysis.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis.message, [
-                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
-                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+                 { id: "fastmode", label: "Je n'ai pas les infos précises", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "photo", label: "Envoyer une photo", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
                ]);
             } else {
                addMessage("bot", analysis.message);
-               setTimeout(() => addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions techniques ?"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité vous en faut-il ?"), 500);
             }
           } else {
-            // No match — use symptom engine to guide
-            const symptomsResult = analyzeSymptoms(fullCtx);
+            // No match — symptom engine
+            const symptomsResult = analyzeSymptoms(normInput);
             if (symptomsResult.hypothesis) {
-              addMessage("bot", `1. 🔍 Diagnostic\n${symptomsResult.hypothesis}\n\n2. 🛠 Solution\nJe vais vous guider avec quelques questions pour confirmer et préparer votre demande.\n\n3. 📦 Proposition\nDès confirmation, nous pourrons trouver la pièce ou l'intervention adaptée.\n\n4. ❓ Question utile\n${symptomsResult.nextQuestion}`);
-              setCascadePending(true);
-
-              // Tag based on suggested type
+              const isInterv = symptomsResult.suggestedType === "DEVIS";
               if (symptomsResult.suggestedType) addTag(symptomsResult.suggestedType);
-              if (symptomsResult.suggestedType === "DEVIS") {
-                addTag("ALEXANDRE");
-                setRequestData(prev => ({ ...prev, orientation: "ALEXANDRE" }));
-              } else {
-                addTag("PASCALE");
-                setRequestData(prev => ({ ...prev, orientation: "PASCALE" }));
-              }
+              if (isInterv) { addTag("ALEXANDRE"); setRequestData(prev => ({ ...prev, orientation: "ALEXANDRE" })); }
+              else { addTag("PASCALE"); setRequestData(prev => ({ ...prev, orientation: "PASCALE" })); }
+
+              addMessage("bot", `${symptomsResult.hypothesis}\n\n${symptomsResult.nextQuestion}\n_Vous pouvez aussi envoyer une photo._`, [
+                { id: "photo", label: "Envoyer une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+              ]);
+              setCascadePending(true);
             } else {
-              addMessage("bot", "Pour vous aider efficacement, j'ai besoin de quelques précisions.\n\n- Est-ce que la pièce **tourne** ?\n- Y a-t-il un **bruit** ou un **échauffement** ?\n- S'agit-il d'une porte, d'une machine ou d'un autre équipement ?\n\nVous pouvez aussi **envoyer une photo** si c'est plus simple.");
+              // Total fallback: offer photo + basic questions
+              addMessage("bot", "Pour trouver la bonne pièce, j'ai besoin de savoir :\n\nEst-ce que ça **tourne** ? Y a-t-il un **bruit** ou **échauffement** ?", [
+                { id: "photo", label: "Plus simple avec une photo 📷", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
+              ]);
               setCascadePending(true);
             }
           }
         } else if (current === 2) {
-          // Turn 2: cross-symptom analysis with full accumulated context
-          const fullCtx = accumulatedContext + " " + input;
+          const normInput2 = normalizeInput(input);
+          const fullCtx = accumulatedContext + " " + normInput2;
+
+          // v5: re-check INTERVENTION on turn 2 if it came through fallback
+          const reqType2 = detectRequestType(normInput2);
+          if (reqType2 === "INTERVENTION" && !requestData.orientation) {
+            setRequestData(prev => ({ ...prev, issueDescription: normInput2 }));
+            addMessage("bot", "Souhaitez-vous :", [
+              { id: "devis_interv", label: "🛠 Devis d'intervention", action: () => {
+                addMessage("user", "Devis d'intervention");
+                setCurrentFlow("devis");
+                setRequestData(prev => ({ ...prev, flowType: "devis", orientation: "ALEXANDRE" }));
+                addTag("DEVIS"); addTag("ALEXANDRE");
+                setTimeout(() => addMessage("bot", "Quel est le problème exactement ?"), 500);
+              }, icon: <HardHat size={16} className="text-brand-orange" /> },
+              { id: "renseign", label: "💡 Renseignement", action: () => {
+                addMessage("user", "Renseignement");
+                addTag("TECHNIQUE");
+                setTimeout(() => addMessage("bot", "Qu'est-ce qui se passe exactement ?"), 500);
+              }, icon: <Search size={16} className="text-brand-blue" /> }
+            ]);
+            return;
+          }
+
           let analysis2 = analyzeBelt(fullCtx);
           if (!analysis2.matches) analysis2 = analyzeBearing(fullCtx);
           if (!analysis2.matches) analysis2 = analyzeGeneral(fullCtx);
@@ -477,12 +611,12 @@ export default function ChatBot() {
             if (analysis2.needsCascade) {
                setCascadePending(true);
                addMessage("bot", analysis2.message, [
-                 { id: "fastmode", label: "Je n'ai pas toutes les informations", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
-                 { id: "force_send", label: "Envoyer quand même ma demande", action: () => handleForceSend(), icon: <Send size={16} className="text-brand-blue" /> }
+                 { id: "fastmode", label: "Je n'ai pas les infos précises", action: () => handleFastMode(), icon: <Zap size={16} className="text-brand-orange" /> },
+                 { id: "photo", label: "Envoyer une photo", action: () => handlePhotoUpload(), icon: <Camera size={16} /> }
                ]);
             } else {
                addMessage("bot", analysis2.message);
-               setTimeout(() => addMessage("bot", "Quelle quantité souhaitez-vous et avez-vous d'autres précisions ?"), 800);
+               setTimeout(() => addMessage("bot", "Quelle quantité vous en faut-il ?"), 500);
             }
           } else {
             const symptomsResult2 = analyzeSymptoms(fullCtx);
@@ -490,22 +624,25 @@ export default function ChatBot() {
               addMessage("bot", `${symptomsResult2.hypothesis}\n\n${symptomsResult2.nextQuestion}`);
               setCascadePending(true);
             } else {
-              addMessage("bot", "Merci pour ces précisions. Notre équipe technique analysera votre demande.\n\nQuelle quantité souhaitez-vous et avez-vous d'autres informations à ajouter ?");
+              addMessage("bot", "Notre équipe prendra en charge votre demande.\n\nQuelle quantité vous en faut-il ?");
             }
           }
         } else if (current === 3) {
-          setRequestData(prev => ({ ...prev, application: input }));
-          addMessage("bot", "Merci.\n\nPour finaliser votre demande, merci d'indiquer votre nom, société et numéro de téléphone :");
+          setRequestData(prev => ({ ...prev, quantity: input }));
+          addMessage("bot", "Sur quelle machine est-elle montée ?");
         } else if (current === 4) {
-           const contacts = extractContacts(input);
+          setRequestData(prev => ({ ...prev, application: input }));
+          addMessage("bot", "Votre nom et téléphone ?");
+        } else if (current === 5) {
+           const contacts = smartSplitContact(input);
            setRequestData(prev => ({ ...prev, contactName: contacts.name, contactCompany: contacts.company, contactPhone: contacts.phone }));
            if (!contacts.phone) {
              setAwaitingField("phone");
-             addMessage("bot", "Il nous manque le numéro de téléphone. Pouvez-vous nous le communiquer ?");
+             addMessage("bot", "Numéro de téléphone ? (ex: 06 12 34 56 78)");
              return;
            }
            setAwaitingField("email");
-           addMessage("bot", "Mémorisé. Et votre adresse e-mail pour le suivi ?");
+           addMessage("bot", "Email ? (optionnel)");
         }
       }
       
@@ -632,6 +769,17 @@ export default function ChatBot() {
               )}>
                 <p className="whitespace-pre-wrap">{message.text}</p>
                 
+                {/* v5.2: Photo preview for user uploads */}
+                {message.photoDataUrl && (
+                  <div className="mt-2">
+                    <img
+                      src={message.photoDataUrl}
+                      alt="Photo envoyée"
+                      className="max-w-[200px] max-h-[200px] rounded-xl object-cover border-2 border-white/30 shadow-md"
+                    />
+                  </div>
+                )}
+                
                 {/* Options display */}
                 {message.options && message.sender === "bot" && (
                   <div className="space-y-2 mt-4">
@@ -753,31 +901,56 @@ export default function ChatBot() {
 
       {/* Input Area */}
       <div className="p-3 md:p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 shrink-0">
+        {/* v5.2: Fast-exit quick send bar */}
+        {currentFlow !== "home" && step === 1 && (
+          <div className="mb-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                addMessage("bot", "Pas de problème. Laissez-moi votre numéro et on vous rappelle rapidement.");
+                setAwaitingField("phone");
+              }}
+              className="text-xs text-slate-500 dark:text-slate-400 hover:text-brand-blue transition-colors flex items-center gap-1 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700"
+            >
+              <PhoneCall size={12} /> Aller plus vite ? Laissez votre numéro
+            </button>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="flex gap-2 relative items-center">
+          {/* v5.2: Real photo input with FileReader */}
+          <input
+            ref={photoInputRef}
+            id="photo-upload"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            disabled={currentFlow === "home"}
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                handlePhotoUpload(e.target.files[0]);
+              }
+            }}
+          />
           <label
             htmlFor="photo-upload"
-            title="Prendre une photo"
+            title="Envoyer une photo"
             className={cn(
-              "min-w-[48px] h-[48px] rounded-full flex items-center justify-center transition-colors shrink-0 shadow-sm relative overflow-hidden",
-              currentFlow === "home" 
-                ? "text-slate-400 bg-slate-100 dark:bg-slate-800 opacity-50 cursor-not-allowed"
-                : "text-slate-600 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 cursor-pointer active:scale-95"
+              "min-w-[48px] h-[48px] rounded-full flex items-center justify-center transition-colors shrink-0 shadow-sm cursor-pointer",
+              currentFlow === "home"
+                ? "text-slate-400 bg-slate-100 dark:bg-slate-800 opacity-50 cursor-not-allowed pointer-events-none"
+                : photoDataUrls.length > 0
+                  ? "text-white bg-brand-blue hover:bg-brand-blue/90 active:scale-95"
+                  : "text-slate-600 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 active:scale-95"
             )}
           >
-            <input 
-                id="photo-upload"
-                type="file" 
-                accept="image/*" 
-                capture="environment" 
-                className="hidden" 
-                disabled={currentFlow === "home"}
-                onChange={(e) => {
-                    if (e.target.files && e.target.files.length > 0) {
-                        handlePhotoUpload();
-                    }
-                }}
-            />
             <Camera size={22} />
+            {photoDataUrls.length > 0 && (
+              <span className="absolute -top-1 -right-1 bg-brand-orange text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                {photoDataUrls.length}
+              </span>
+            )}
           </label>
           
           <input

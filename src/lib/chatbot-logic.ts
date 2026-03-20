@@ -27,6 +27,8 @@ export interface ChatbotData {
   location?: string;
   urgency?: string;
   hasPhoto?: boolean;
+  photoCount?: number;         // v5.2: number of photos uploaded
+  photoDataUrls?: string[];   // v5.2: base64 previews for display
   orientation?: "ALEXANDRE" | "PASCALE";
   contactName?: string;
   contactFirstName?: string;
@@ -68,7 +70,199 @@ export const getRequests = (): StoredRequest[] => {
 };
 
 // ==========================================
-// V3 WHATSAPP FORMAT — 11 fields
+// V5 UX UTILITIES
+// ==========================================
+
+/**
+ * v5 — Detects whether the first message is requesting a PIECE or an INTERVENTION.
+ */
+export const detectRequestType = (input: string): "PIECE" | "INTERVENTION" | "UNKNOWN" => {
+  const txt = normalizeInput(input).toLowerCase();
+
+  const interventionKeywords = /\bport[e]?\b|\brideau\b|\bvolet\b|\bauto(matisme)?\b|\bbloqué\b|\bbloquée\b|\bbloque\b|\bpann[e]?\b|\bintervention\b|\bchantier\b|\bmotoris\b|\btélécommande\b|\bvérin\b.*\bporte\b|\bsection/;
+  if (interventionKeywords.test(txt)) return "INTERVENTION";
+
+  const pieceKeywords = /\broulement\b|\bcourroie\b|\bpalier\b|\bjoint\b|\bvis\b|\bcapteur\b|\bréducteur\b|\bengrenage\b|\bclavette\b|\bécrou\b|\bboulon\b|\bfiltre\b|\bcourroi/;
+  if (pieceKeywords.test(txt)) return "PIECE";
+
+  return "UNKNOWN";
+};
+
+/**
+ * v5 — Detects vague/imprecise inputs that need clarification.
+ */
+export const isVagueInput = (input: string): boolean => {
+  const txt = input.toLowerCase().trim();
+  if (txt.length < 15 && /^(ça|ca|c'est|il|elle)?\s*(ne\s+)?(marche|fonc|tourne|bouge|répond|démarre|ouvre|ferme)\s*(plus|pas)?\s*\.?$/i.test(txt)) return true;
+  if (/^(j'ai\s+un\s+)?(problème|souci|soucis|truc|truc qui|pb)\s*\.?$/i.test(txt)) return true;
+  if (/^(c'est\s+)?(bloqué?e?|cassé?e?|en panne|mort|hs|hors service)\s*\.?$/i.test(txt)) return true;
+  return false;
+};
+
+/**
+ * v5 — Detects a non-technical client who doesn't know what they need.
+ */
+export const isNonTechnicalClient = (input: string): boolean => {
+  const txt = input.toLowerCase();
+  return /je (ne |n')?(sais|connais|comprends) pas|j'y connais rien|c'est quoi|kesako|je sais pas|aucune idée|jamais vu|je ne sais/i.test(txt);
+};
+
+/**
+ * v5 — Builds a clean end-of-journey summary without empty "Non renseigné" lines.
+ */
+export const buildCleanSummary = (data: ChatbotData): string => {
+  const lines: string[] = ["✅ **Votre demande :**\n"];
+
+  if (data.flowType === "devis") {
+    if (data.equipmentType) lines.push(`🔧 Équipement : ${data.equipmentType}`);
+    if (data.issueDescription) lines.push(`⚠️ Problème : ${data.issueDescription}`);
+    if (data.location) lines.push(`📍 Lieu : ${data.location}`);
+    if (data.urgency) lines.push(`⏱ Urgence : ${data.urgency}`);
+  } else {
+    if (data.productType) lines.push(`📦 Pièce : ${data.productType}`);
+    if (data.reference) lines.push(`🏷 Référence : ${data.reference}`);
+    if (data.dimensions) lines.push(`📐 Dimensions : ${data.dimensions}`);
+    if (data.quantity) lines.push(`🔢 Quantité : ${data.quantity}`);
+    if (data.application) lines.push(`🏭 Machine : ${data.application}`);
+  }
+
+  if (data.hasPhoto) lines.push(`📷 Photo : jointe`);
+
+  if (data.contactName || data.contactPhone) {
+    lines.push("");
+    lines.push(`👤 Contact : ${[data.contactName, data.contactCompany, data.contactPhone].filter(Boolean).join(" — ")}`);
+  }
+
+  const oriented = data.orientation === "ALEXANDRE" ? "Alexandre (intervention terrain)" : "Pascale (pièces / fournitures)";
+  lines.push(`\n→ Votre demande sera traitée par **${oriented}**.`);
+
+  return lines.join("\n");
+};
+
+// ==========================================
+// V4 UTILITIES — Normalization & Parsing
+// ==========================================
+
+/**
+ * v4 — Nettoyage intelligent : corrects common French typos before analysis.
+ */
+export const normalizeInput = (input: string): string => {
+  let out = input;
+  // Equipment corrections
+  out = out.replace(/\bsectionel+e?\b/gi, "sectionnelle");
+  out = out.replace(/\bsectionnele\b/gi, "sectionnelle");
+  out = out.replace(/\bbloqu[eé]r\b/gi, "bloquée");
+  out = out.replace(/\bimmedia[t]?\b/gi, "immédiat");
+  out = out.replace(/\bimediat\b/gi, "immédiat");
+  out = out.replace(/\bimmediat\b/gi, "immédiat");
+  out = out.replace(/\bpannée\b/gi, "panne");
+  out = out.replace(/\broulement[s]?\b/gi, (m) => m); // keep
+  out = out.replace(/\bcourroi[e]?\b/gi, "courroie");
+  out = out.replace(/\bvibrasion\b/gi, "vibration");
+  out = out.replace(/\béchauffemen[t]?\b/gi, "échauffement");
+  out = out.replace(/\bchaufage\b/gi, "chauffage");
+  out = out.replace(/\bvolet[s]?\s+roulant[s]?\b/gi, "volet roulant");
+  return out;
+};
+
+/**
+ * v4 — Parses a combined localisation + urgency string.
+ * Ex: "paris urgence fort imediat" → { location: "Paris", urgency: "Intervention immédiate" }
+ */
+export const parseLocationUrgency = (input: string): { location: string; urgency: string } => {
+  const normalized = normalizeInput(input).toLowerCase();
+
+  // Urgency keywords — ordered from most to least critical
+  const urgencyMap: { pattern: RegExp; label: string }[] = [
+    { pattern: /immédiat|immediat|critique|arrêt\s+de\s+prod|bloqué|urgence\s+absolue/, label: "Intervention immédiate" },
+    { pattern: /urgent|fort|rapide|demi.journée|demi journée|aujourd'hui|auj/, label: "Urgence — intervention rapide" },
+    { pattern: /normal|semaine|standard|pas\s+urgent/, label: "Normale — sous 48–72h" },
+  ];
+
+  let urgency = "";
+  for (const { pattern, label } of urgencyMap) {
+    if (pattern.test(normalized)) {
+      urgency = label;
+      break;
+    }
+  }
+
+  // Strip urgency words to isolate location
+  let locationRaw = input
+    .replace(/\b(urgence|urgent|fort|imediat|immédiat|immediat|critique|rapide|normal|standard|demi.journée|aujourd'hui|auj|intervention|bloqué|bloquee)\b/gi, "")
+    .trim();
+
+  // Capitalize first letter of each word
+  const location = locationRaw
+    .split(" ")
+    .filter(w => w.length > 0)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+
+  return { location: location || "Non renseigné", urgency: urgency || input };
+};
+
+/**
+ * v4 — Smart contact split for single-line inputs like "janicot snimop".
+ * Returns an object with name, company, phone, email.
+ */
+export const smartSplitContact = (text: string): { name: string; phone: string; company: string; email: string } => {
+  let extracted = { name: "", phone: "", company: "", email: "" };
+
+  // Email
+  const emailMatch = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+  if (emailMatch) extracted.email = emailMatch[0];
+
+  // Phone (French)
+  const phoneMatch = text.match(/(\+33|0)[ \-.]?[1-9]([ \-.]?[0-9]{2}){4}/);
+  if (phoneMatch) extracted.phone = phoneMatch[0];
+
+  const stripped = text
+    .replace(extracted.email, "")
+    .replace(extracted.phone, "")
+    .trim();
+
+  const lines = stripped.split("\n");
+
+  if (lines.length > 1) {
+    // Multi-line structured input
+    lines.forEach(l => {
+      const lLow = l.toLowerCase();
+      const val = l.split(":")[1]?.trim() || "";
+      if (lLow.match(/^nom|^prénom|^prenom/)) extracted.name = val;
+      if (lLow.match(/^soci[eé]t[eé]|^entreprise|^soc\s*:/)) extracted.company = val;
+      if (lLow.match(/^t[eé]l|^phone/)) extracted.phone = val || extracted.phone;
+      if (lLow.match(/^e?mail/)) extracted.email = val || extracted.email;
+    });
+  } else {
+    // Single-line — "janicot snimop" or "Jean Dupont SNIMOP 0606060606"
+    const words = stripped.split(/\s+/).filter(w => w.length > 0);
+
+    // Find company: all-uppercase word of length > 2 that isn't a French common word
+    const commonWords = new Set(["ET", "DE", "DU", "LA", "LE", "LES", "UN", "UNE", "AU", "AUX"]);
+    const companyIndex = words.findIndex(
+      w => w === w.toUpperCase() && w.length > 2 && /^[A-Z]/.test(w) && !commonWords.has(w)
+    );
+
+    if (companyIndex !== -1) {
+      extracted.company = words[companyIndex];
+      words.splice(companyIndex, 1);
+    } else if (words.length > 2) {
+      // Last word assumed to be company if no phone/email pattern
+      extracted.company = words.pop() || "";
+    }
+
+    // Remaining words = name — capitalize properly
+    extracted.name = words
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  return extracted;
+};
+
+// ==========================================
+// V3/V4 WHATSAPP FORMAT — 11 fields
 // ==========================================
 
 export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]): string => {
@@ -164,7 +358,7 @@ export const generateWhatsAppLink = (data: ChatbotData, userMessages: string[]):
   text += `Nom : ${data.contactName || "Non renseigné"}\n`;
   text += `Société : ${data.contactCompany || "Non renseignée"}\n`;
   text += `Téléphone : ${data.contactPhone || "Non renseigné"}\n`;
-  text += `E-mail : ${data.contactEmail || "Non renseigné"}\n`;
+  text += `Email : ${data.contactEmail || "Non renseigné"}\n`;
   
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 };
@@ -203,76 +397,105 @@ export const analyzeSymptoms = (accumulatedContext: string): {
   confidence: "HIGH" | "MEDIUM" | "LOW";
   nextQuestion: string;
 } => {
-  const ctx = accumulatedContext.toLowerCase();
+  // v4: normalize before analysis to catch typos
+  const ctx = normalizeInput(accumulatedContext).toLowerCase();
 
-  const tourne = ctx.includes("tourne") || ctx.includes("rotation") || ctx.includes("axe");
-  const bruit = ctx.includes("bruit") || ctx.includes("grince") || ctx.includes("claque") || ctx.includes("craque");
-  const chauffe = ctx.includes("chauffe") || ctx.includes("chaud") || ctx.includes("échauffement");
+  // Extended symptom flags
+  const tourne = ctx.includes("tourne") || ctx.includes("rotation") || ctx.includes("axe") || ctx.includes("rotat");
+  const bruit = ctx.includes("bruit") || ctx.includes("grince") || ctx.includes("claque") || ctx.includes("craque") || ctx.includes("couine");
+  const chauffe = ctx.includes("chauffe") || ctx.includes("chaud") || ctx.includes("échauffement") || ctx.includes("chaleur");
   const vibre = ctx.includes("vibr");
   const patine = ctx.includes("patine") || ctx.includes("glisse") || ctx.includes("slip");
   const casse = ctx.includes("cassé") || ctx.includes("cassée") || ctx.includes("coupée") || ctx.includes("rompue");
   const poulie = ctx.includes("poulie") || ctx.includes("compresseur") || ctx.includes("courroi");
-  const porte = ctx.includes("porte") || ctx.includes("rideau") || ctx.includes("volet") || ctx.includes("barrière") || ctx.includes("automatisme") || ctx.includes("motorisation") || ctx.includes("sectionnel");
+  const porte = ctx.includes("porte") || ctx.includes("rideau") || ctx.includes("volet") || ctx.includes("barrière") || ctx.includes("automatisme") || ctx.includes("motorisation") || ctx.includes("sectionnel") || ctx.includes("sectionnelle");
   const intervention = ctx.includes("panne") || ctx.includes("répara") || ctx.includes("interven") || ctx.includes("chantier") || ctx.includes("install");
 
-  // Intervention / Alexandre domain
+  // ──────────────────────────────────────────────────
+  // PRIORITY 1 : Intervention terrain → Alexandre
+  // ──────────────────────────────────────────────────
   if (porte || (intervention && !tourne && !poulie)) {
     return {
-      hypothesis: "Il s'agit probablement d'une demande d'**intervention terrain** (porte, rideau, automatisme). Je vais vous orienter vers **Alexandre**.",
+      hypothesis: "C'est clairement une demande d'**intervention terrain** (porte, rideau, automatisme) — on va l'orienter vers **Alexandre**.",
       suggestedType: "DEVIS",
       confidence: "HIGH",
-      nextQuestion: "Pouvez-vous me préciser le type d'équipement (porte sectionnelle, rideau métallique, volet...) et la nature du problème ?"
+      nextQuestion: "Quel est le type exact d'équipement (porte sectionnelle, rideau métallique, volet roulant...) et qu'est-ce qui se passe ?"
     };
   }
 
-  // Belt domain
-  if (patine || casse || poulie) {
-    return {
-      hypothesis: "Les symptômes indiquent probablement une **courroie** défectueuse (patinage, casse, problème de transmission).",
-      suggestedType: "COURROIE",
-      confidence: "HIGH",
-      nextQuestion: "Avez-vous la largeur ou une référence inscrite sur la courroie ?"
-    };
-  }
-
-  // Bearing domain — symptom cross-check
+  // ──────────────────────────────────────────────────
+  // PRIORITY 2 (v4 correction) : Rotation + bruit → ROULEMENT AVANT courroie
+  // ──────────────────────────────────────────────────
   if (tourne && bruit && chauffe) {
     return {
-      hypothesis: "Ensemble de symptômes cohérent : **rotation + bruit + échauffement** → probabilité élevée de **roulement ou palier usé**.",
+      hypothesis: "**Rotation + bruit + échauffement** — dans ce cas, c'est souvent un **roulement grippé ou usé**. Probabilité élevée.",
       suggestedType: "ROULEMENT",
       confidence: "HIGH",
-      nextQuestion: "Pouvez-vous me donner les dimensions (int × ext × épaisseur) ou la référence gravée sur la bague ?"
+      nextQuestion: "Avez-vous la référence gravée sur la bague ou les dimensions (int × ext × épaisseur) ?"
     };
   }
 
-  if (tourne && (bruit || chauffe || vibre)) {
+  if (tourne && bruit) {
     return {
-      hypothesis: "Les symptômes (rotation + " + (bruit ? "bruit" : "") + (chauffe ? " échauffement" : "") + (vibre ? " vibration" : "") + ") suggèrent un **roulement ou palier** en fin de vie.",
+      hypothesis: "**Rotation + bruit** — dans ce cas, c'est généralement un **roulement en fin de vie**. C'est la cause la plus fréquente.",
+      suggestedType: "ROULEMENT",
+      confidence: "HIGH",
+      nextQuestion: "Est-ce que ça chauffe aussi ? Et avez-vous la référence ou les dimensions ?"
+    };
+  }
+
+  if (tourne && (chauffe || vibre)) {
+    return {
+      hypothesis: "**Rotation + " + (chauffe ? "échauffement" : "vibration") + "** — dans ce cas, c'est souvent un **roulement défectueux** ou un désalignement.",
       suggestedType: "ROULEMENT",
       confidence: "MEDIUM",
-      nextQuestion: "Est-ce que la pièce est montée sur un axe ? Avez-vous la référence ou les dimensions ?"
+      nextQuestion: "Y a-t-il un bruit associé ? Et avez-vous la référence ou les dimensions ?"
+    };
+  }
+
+  // ──────────────────────────────────────────────────
+  // PRIORITY 3 : Belt clear symptoms
+  // ──────────────────────────────────────────────────
+  if (patine || casse) {
+    return {
+      hypothesis: "**" + (patine ? "Patinage" : "Casse") + "** — dans ce cas, c'est la **courroie** qui est en cause.",
+      suggestedType: "COURROIE",
+      confidence: "HIGH",
+      nextQuestion: "Avez-vous la largeur, une référence ou la longueur de la courroie ?"
+    };
+  }
+
+  if (poulie) {
+    return {
+      hypothesis: "Contexte **poulie / compresseur / courroie** — dans ce cas on part sur une **courroie** à identifier.",
+      suggestedType: "COURROIE",
+      confidence: "HIGH",
+      nextQuestion: "Avez-vous la section ou les dimensions de la courroie (largeur × hauteur) ?"
+    };
+  }
+
+  // ──────────────────────────────────────────────────
+  // PRIORITY 4 : Vibration ou bruit seul
+  // ──────────────────────────────────────────────────
+  if (vibre && !tourne) {
+    return {
+      hypothesis: "Une **vibration anormale** peut venir d'un roulement usé, d'un balourd ou d'un désalignement.",
+      suggestedType: "ROULEMENT",
+      confidence: "LOW",
+      nextQuestion: "Est-ce que la pièce tourne ? La vibration est-elle présente uniquement sous charge ?"
     };
   }
 
   if (bruit && !tourne) {
     return {
-      hypothesis: "Un **bruit métallique** sans rotation identifiée peut indiquer un défaut mécanique : roulement, frottement, jeu.",
+      hypothesis: "Un **bruit** sans rotation identifiée — ça peut être un frottement, un jeu mécanique, ou une courroie qui claque.",
       suggestedType: "ROULEMENT",
       confidence: "MEDIUM",
-      nextQuestion: "Est-ce que la pièce tourne ou est-ce un bruit de frottement statique ?"
+      nextQuestion: "Est-ce que la pièce tourne ou est-ce un bruit en mouvement linéaire ?"
     };
   }
 
-  if (vibre) {
-    return {
-      hypothesis: "Une **vibration** anormale peut venir d'un roulement, d'un déséquilibre ou d'un mauvais alignement.",
-      suggestedType: "ROULEMENT",
-      confidence: "LOW",
-      nextQuestion: "Est-ce que la vibration est présente à l'arrêt ou uniquement en rotation ?"
-    };
-  }
-
-  // Generic fallback
+  // Fallback
   return {
     hypothesis: "",
     suggestedType: null,
