@@ -420,40 +420,36 @@ export default function ChatBot() {
       // ==========================================
       else if (currentFlow === "devis") {
         if (current === 1) {
-          // Turn 1: What is the problem?
           if (isVagueInput(input)) {
             addMessage("bot", "Pouvez-vous préciser ?\n_(ex : ne s'ouvre plus, bruit, blocage, télécommande morte...)_");
             setStep(current);
             return;
           }
           const normIssue = normalizeInput(input);
-          setRequestData(prev => ({ ...prev, issueDescription: normIssue, symptoms: normIssue, orientation: "ALEXANDRE" }));
+          const extracted = extractInfoFromSentence(input);
+          const eq = extracted.equipmentType || "équipement";
+          const pbm = extracted.issueDescription || normIssue;
+          setRequestData(prev => ({ ...prev, issueDescription: normIssue, equipmentType: extracted.equipmentType, symptoms: normIssue, orientation: "ALEXANDRE" }));
           addTag("ALEXANDRE");
-          if (/urgent|arrêt|bloqué|bloquée|sécurité|immédiat/i.test(input)) {
-            addTag("URGENT");
-            // Already urgent — skip urgency turn
-            setRequestData(prev => ({ ...prev, urgency: "Intervention immédiate" }));
-            addMessage("bot", "Où se trouve le site ?");
-            setStep(current + 2); // skip turn 2 (urgency already known)
-            return;
-          }
-          addMessage("bot", "C'est urgent ? Ou pouvons-nous planifier ?");
+          addMessage("bot", `Compris — ${eq} ${pbm}.\n\nC'est urgent ?`);
         } else if (current === 2) {
-          // Turn 2: Urgency
           const urgency = normalizeInput(input);
           setRequestData(prev => ({ ...prev, urgency }));
           if (/immédiat|urgent|stop|arrêt|bloqu/i.test(input)) addTag("URGENT");
           addMessage("bot", "Où se trouve le site ?");
         } else if (current === 3) {
-          // Turn 3: Location
           const parsed = parseLocationUrgency(input);
           setRequestData(prev => ({ ...prev, location: parsed.location || input }));
-          addMessage("bot", "Quel type d'équipement ? (porte, rideau, volet, machine...)");
+          if (requestData.equipmentType) {
+            addMessage("bot", "Y a-t-il des informations d'accès spécifiques ? (ex: code, hauteur...)");
+          } else {
+            addMessage("bot", "Quel type d'équipement ? (porte, rideau, volet, machine...)");
+          }
         } else if (current === 4) {
-          // Turn 4: Equipment type
-          const normEquipment = normalizeInput(input);
-          setRequestData(prev => ({ ...prev, equipmentType: normEquipment }));
-          addMessage("bot", "Votre nom et téléphone ?");
+          if (!requestData.equipmentType) {
+            setRequestData(prev => ({ ...prev, equipmentType: normalizeInput(input) }));
+          }
+          addMessage("bot", "On va vous envoyer le bon technicien rapidement.\n\nVotre nom et téléphone ?");
         } else if (current === 5) {
           // Turn 5: Contact
           const contacts = smartSplitContact(input);
@@ -523,19 +519,20 @@ export default function ChatBot() {
 
             // v5: otherwise offer devis vs renseignement
             setRequestData(prev => ({ ...prev, issueDescription: normInput }));
-            addMessage("bot", "Souhaitez-vous :", [
-              { id: "devis_interv", label: "🛠 Un devis d'intervention (on envoie quelqu'un)", action: () => {
-                addMessage("user", "Devis d'intervention");
+            addMessage("bot", "Vous cherchez une pièce ou une intervention ?", [
+              { id: "devis_interv", label: "🚧 Intervention / Dépannage", action: () => {
+                addMessage("user", "Intervention");
                 setCurrentFlow("devis");
                 setRequestData(prev => ({ ...prev, flowType: "devis", orientation: "ALEXANDRE", equipmentType: normInput }));
                 addTag("DEVIS"); addTag("ALEXANDRE");
                 setTimeout(() => addMessage("bot", "Quel est le problème exactement ?"), 500);
               }, icon: <HardHat size={16} className="text-brand-orange" /> },
-              { id: "renseign", label: "💡 Juste un renseignement", action: () => {
-                addMessage("user", "Renseignement technique");
-                addTag("TECHNIQUE");
-                setTimeout(() => addMessage("bot", "Qu'est-ce qui se passe exactement ?"), 500);
-              }, icon: <Search size={16} className="text-brand-blue" /> }
+              { id: "renseign", label: "🔧 Pièce détachée", action: () => {
+                addMessage("user", "Pièce");
+                addTag("PIECE"); addTag("PASCALE");
+                setRequestData(prev => ({ ...prev, flowType: "piece", orientation: "PASCALE" }));
+                setTimeout(() => addMessage("bot", "Quelle pièce recherchez-vous ?"), 500);
+              }, icon: <Wrench size={16} className="text-brand-blue" /> }
             ]);
             return;
           }
@@ -756,8 +753,8 @@ export default function ChatBot() {
               <img
                 src="/snimop-logo.jpg"
                 alt="SNIMOP"
-                className="h-6 w-auto object-contain rounded-sm bg-white px-1"
-                style={{ maxWidth: 72 }}
+                className="h-6 w-auto object-contain rounded-sm px-1"
+                style={{ maxWidth: 72, mixBlendMode: 'multiply' }}
               />
             </div>
             <p className="text-blue-100 text-xs flex items-center gap-1 mt-0.5">

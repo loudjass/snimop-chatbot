@@ -18,12 +18,13 @@ export default function Home() {
           backgroundSize: "cover",
           backgroundPosition: "center top",
           backgroundRepeat: "no-repeat",
-          opacity: 0.18,
-          filter: "blur(1px) saturate(0.7)",
+          opacity: 0.15,
+          filter: "blur(2px)",
         }}
       />
       {/* Blue overlay for brand coherence */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-slate-950 via-brand-blue/20 to-slate-950" />
+      <div className="absolute inset-0 -z-10 bg-brand-blue/30 mix-blend-overlay" />
+      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-slate-950/90 via-slate-900/80 to-slate-950/90" />
       {/* Bottom fade */}
       <div className="absolute bottom-0 inset-x-0 h-32 bg-gradient-to-t from-slate-950 to-transparent -z-10" />
 
@@ -33,13 +34,12 @@ export default function Home() {
         <header className="flex items-center justify-between py-5 md:py-7 shrink-0">
           {/* Logo SNIMOP */}
           <div className="flex items-center gap-3">
-            <div className="relative flex items-center">
-              <div className="absolute inset-0 rounded-xl bg-white/10 blur-md" />
+            <div className="relative flex items-center bg-white/90 p-1 rounded-sm">
               <img
                 src="/snimop-logo.jpg"
                 alt="SNIMOP"
-                className="relative h-10 md:h-12 w-auto object-contain rounded-lg"
-                style={{ maxWidth: 160 }}
+                className="relative h-10 md:h-12 w-auto object-contain"
+                style={{ maxWidth: 160, mixBlendMode: 'multiply' }}
               />
             </div>
           </div>
@@ -135,8 +135,17 @@ export default function Home() {
               transition={{ duration: 0.5, delay: 0.15 }}
             >
               <ChatBot />
+
+              {/* Contacts Fixes and Info Block */}
+              <div className="mt-6 bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
+                <h3 className="text-white font-medium mb-1 text-sm">Nos Contacts Directs</h3>
+                <a href="tel:0139358383" className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors text-sm"><PhoneCall size={14}/> 📞 SNIMOP (Standard) : 01 39 35 83 83</a>
+                <a href="https://wa.me/33607877159" className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors text-sm"><PhoneCall size={14}/> 👨🔧 Pascal (Pièces) : 06 07 87 71 59</a>
+                <a href="https://wa.me/33640946757" className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors text-sm"><PhoneCall size={14}/> 🚧 Alexandre (Intervention) : 06 40 94 67 57</a>
+              </div>
             </motion.div>
           </div>
+
 
         </div>
       </div>

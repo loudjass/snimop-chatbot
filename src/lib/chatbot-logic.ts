@@ -79,10 +79,10 @@ export const getRequests = (): StoredRequest[] => {
 export const detectRequestType = (input: string): "PIECE" | "INTERVENTION" | "UNKNOWN" => {
   const txt = normalizeInput(input).toLowerCase();
 
-  const interventionKeywords = /\bport[e]?\b|\brideau\b|\bvolet\b|\bauto(matisme)?\b|\bbloqué\b|\bbloquée\b|\bbloque\b|\bpann[e]?\b|\bintervention\b|\bchantier\b|\bmotoris\b|\btélécommande\b|\bvérin\b.*\bporte\b|\bsection/;
+  const interventionKeywords = /\bport[e]?\b|\brideau\b|\bvolet\b|\bauto(matisme)?\b|\bbloqué\b|\bbloquée\b|\bbloque\b|\bpann[e]?\b|\bintervention\b|\bchantier\b|\bmotoris\b|\btélécommande.*\bporte\b|\bsection|\bquai\b|\bniveleur\b|\bbutoir\b|\bsas\b|\bauvent\b|\bbarrière\b|\barceau\b|\bprotection(s)? de rack\b|\bmarquage\b|\bstructure\b|\babri\b|\bmaintenance\b|\bdépannage\b/i;
   if (interventionKeywords.test(txt)) return "INTERVENTION";
 
-  const pieceKeywords = /\broulement\b|\bcourroie\b|\bpalier\b|\bjoint\b|\bvis\b|\bcapteur\b|\bréducteur\b|\bengrenage\b|\bclavette\b|\bécrou\b|\bboulon\b|\bfiltre\b|\bcourroi/;
+  const pieceKeywords = /\broulement\b|\bcourroie\b|\bpalier\b|\bjoint\b|\bvis\b|\bvisserie\b|\bcapteur\b|\bréducteur\b|\bengrenage\b|\bclavette\b|\bécrou\b|\bboulon\b|\bfiltre\b|\bcourt\b|\bmoteur(s)?\b|\bcoffret(s)?\b|\btélécommande(s)?\b|\bcellule(s)?\b|\bbarre(s)? palpeuse\b|\bpièce(s)?\b/i;
   if (pieceKeywords.test(txt)) return "PIECE";
 
   return "UNKNOWN";
@@ -299,6 +299,8 @@ export const generateEmailLink = (data: ChatbotData, userMessages: string[]): st
     if (data.dimensions)   lines.push(`Dimensions : ${data.dimensions}`);
     if (data.quantity)     lines.push(`Quantité : ${data.quantity}`);
     if (data.application)  lines.push(`Machine : ${data.application}`);
+    if (data.aiAnalysis)   lines.push(`\nÉquivalences / Infos:\n${data.aiAnalysis}`);
+    lines.push(`\nMessage brut du client : "${userMessages.join(' ')}"`);
   }
 
   if (data.contactName)  lines.push(`\nContact : ${data.contactName}`);
@@ -321,15 +323,23 @@ export const extractInfoFromSentence = (input: string): Partial<ChatbotData> => 
   // Equipment type extraction
   const equipConf: [RegExp, string][] = [
     [/rideau m[ée]tallique/, "rideau métallique"],
-    [/rideau\b/, "rideau"],
-    [/porte (automatique|coulissante|rapide|sectionnelle|basculante)/, "porte automatique"],
+    [/rideau\b/, "rideau métallique"],
+    [/porte (automatique|coulissante|rapide|sectionnelle|basculante|coupe-feu|piétonne)/, "porte $1"],
     [/porte\b/, "porte"],
     [/portail\b/, "portail"],
     [/volet\b/, "volet"],
-    [/barrière\b/, "barrière"],
+    [/niveleur/, "niveleur de quai"],
+    [/butoir/, "butoir de quai"],
+    [/sas/, "sas de quai"],
+    [/auvent/, "auvent"],
+    [/quai/, "équipement de quai"],
+    [/protection de rack/, "protection de rack"],
+    [/arceau/, "arceau de sécurité"],
+    [/barrière\b/, "barrière de sécurité"],
+    [/marquage/, "marquage au sol"],
+    [/structure/, "structure / abri"],
+    [/motorisation/, "motorisation"],
     [/compresseur\b/, "compresseur"],
-    [/moteur\b/, "moteur"],
-    [/convoyeur\b/, "convoyeur"],
     [/machine\b/, "machine"],
   ];
   for (const [re, label] of equipConf) {
@@ -402,7 +412,7 @@ export const getBeltExpertAnalysis = (input: string): BeltExpertResult => {
     return {
       beltType: "trapezoidale",
       equivalent: `A ${liApprox}`,
-      message: `Courroie SPA ${ld}\n\n↔ Équivalent possible : **A ${liApprox}** (Li)\n\n⚠️ SPA et A sont proches mais non identiques. Conserver le profil d'origine sauf validation technique.\nLd ≈ ${ld} mm — Li ≈ ${liApprox} mm — La ≈ ${laApprox} mm\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      message: `Profil : **SPA**\nLongueur : **${ld}** mm (Ld)\nLi : ${liApprox} mm / Le : ${laApprox} mm\n\n↔ Équivalence possible : **A ${liApprox}**\n\n⚠️ Compatibilité à vérifier selon machine.`,
       warning: "Profils proches, non identiques"
     };
   }
@@ -412,10 +422,11 @@ export const getBeltExpertAnalysis = (input: string): BeltExpertResult => {
   if (spbMatch) {
     const ld = parseInt(spbMatch[1]);
     const liApprox = ld - 45;
+    const laApprox = ld + 22;
     return {
       beltType: "trapezoidale",
       equivalent: `B ${liApprox}`,
-      message: `Courroie SPB ${ld}\n\n↔ Équivalent possible : **B ${liApprox}** (Li)\n\n⚠️ SPB et B sont proches mais non identiques. Conserver le profil d'origine sauf validation technique.\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      message: `Profil : **SPB**\nLongueur : **${ld}** mm (Ld)\nLi : ${liApprox} mm / Le : ${laApprox} mm\n\n↔ Équivalence possible : **B ${liApprox}**\n\n⚠️ Compatibilité à vérifier selon machine.`,
       warning: "Profils proches, non identiques"
     };
   }
@@ -425,10 +436,11 @@ export const getBeltExpertAnalysis = (input: string): BeltExpertResult => {
   if (spcMatch) {
     const ld = parseInt(spcMatch[1]);
     const liApprox = ld - 45;
+    const laApprox = ld + 30;
     return {
       beltType: "trapezoidale",
       equivalent: `C ${liApprox}`,
-      message: `Courroie SPC ${ld}\n\n↔ Équivalent possible : **C ${liApprox}** (Li)\n\n⚠️ Conserver le profil d'origine sauf validation technique.\n_Compatible dans la plupart des cas, à vérifier selon poulies._`,
+      message: `Profil : **SPC**\nLongueur : **${ld}** mm (Ld)\nLi : ${liApprox} mm / Le : ${laApprox} mm\n\n↔ Équivalence possible : **C ${liApprox}**\n\n⚠️ Compatibilité à vérifier selon machine.`,
       warning: "Profils proches, non identiques"
     };
   }
